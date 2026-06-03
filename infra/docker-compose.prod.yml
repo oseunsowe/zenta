@@ -1,0 +1,31 @@
+# Production stack. Both services bind to 127.0.0.1 on the host — only the
+# reverse proxy (Caddy, see Caddyfile.public.example) is exposed publicly.
+#
+#   cp ../backend/.env.example .env   # then fill in real secrets (see .env.example)
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+#
+# The frontend is served same-origin: Caddy proxies /api -> backend, everything
+# else -> frontend, so the browser only ever sees one origin (no CORS needed).
+
+services:
+  backend:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    env_file: .env            # MUST define JWT_SECRET (and other secrets)
+    ports:
+      - '127.0.0.1:8000:8000'
+    volumes:
+      - backend_state:/app/state
+
+  frontend:
+    build:
+      context: ../frontend    # builds Next.js standalone, served on :3000
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    ports:
+      - '127.0.0.1:3000:3000'
+
+volumes:
+  backend_state:

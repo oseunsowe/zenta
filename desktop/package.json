@@ -1,0 +1,54 @@
+{
+  "name": "zenta-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zenta desktop client for consensual remote support",
+  "author": "Zenta",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "clean": "node scripts/clean.js",
+    "build:backend": "node scripts/build-backend.js",
+    "build:frontend": "node scripts/build-frontend.js",
+    "prepack": "npm run clean && npm run build:backend && npm run build:frontend",
+    "predist": "npm run clean && npm run build:backend && npm run build:frontend",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^26.2.0",
+    "electron-builder": "^24.7.0"
+  },
+  "build": {
+    "appId": "com.zenta.desktop",
+    "productName": "Zenta",
+    "directories": {
+      "output": "dist"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/@nut-tree-fork/**"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "."
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6"
+  }
+}

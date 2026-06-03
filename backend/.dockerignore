@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+.venv
+venv
+env
+.pytest_cache
+build
+dist
+*.sqlite3
+*.sqlite3-*
+runtime_state.json
+memory.sqlite3
+.env
+.env.*
+!.env.example

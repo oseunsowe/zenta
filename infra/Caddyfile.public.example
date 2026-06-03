@@ -1,0 +1,35 @@
+# Public production reverse proxy (Caddy v2).
+# Automatic HTTPS via Let's Encrypt. Serves ONE origin: /api -> backend,
+# everything else -> the Next.js frontend. WebSockets are handled automatically.
+#
+# Usage on the VPS:
+#   1. Point your domain's A/AAAA record at the server.
+#   2. Replace zenta.example.com below with your domain.
+#   3. caddy run --config Caddyfile   (or install as a service)
+
+zenta.example.com {
+    encode zstd gzip
+
+    # --- Security headers ---
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # Allow screen capture only on our own origin; deny camera/mic/geo.
+        Permissions-Policy "display-capture=(self), camera=(), microphone=(), geolocation=()"
+        # Don't leak the server software.
+        -Server
+    }
+
+    # --- API + widget loader + WebSockets -> backend (loopback only) ---
+    @backend path /api/* /widget/*
+    handle @backend {
+        reverse_proxy 127.0.0.1:8000
+    }
+
+    # --- Everything else -> Next.js frontend ---
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}

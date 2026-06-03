@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #0d1024; }
+      iframe { width: 100%; height: 100%; border: 0; display: block; }
+      .empty { color: #aab1d8; font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 24px; }
+      .empty a { color: #fff; }
+    </style>
+  </head>
+  <body>
+    <iframe id="panel" allow="display-capture; clipboard-read; clipboard-write"></iframe>
+    <div class="empty" id="empty" style="display:none">
+      Backend URL not set. <a href="#" id="open-options">Open options</a>.
+    </div>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
