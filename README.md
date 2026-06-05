@@ -38,8 +38,4 @@ A private, invite-only AI companion app built with Next.js and FastAPI.
 - The runner does not create a system tray icon or visible taskbar entry while hidden.
 - Toggle the UI using `Ctrl+Alt+E` / `Cmd+Alt+E`.
 
-## Notes
-- This app is intentionally built for stealth mode with internal access controls and gated staging.
-- The desktop build must avoid exposing a system tray icon or other visible OS shell entry while in stealth mode.
-- The frontend includes poor-network handling: offline message queueing, retries, and connectivity status indication.
-- Do not expose invite flows or analytics before private QA.
+
