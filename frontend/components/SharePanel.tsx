@@ -14,7 +14,18 @@ function wsUrl(token: string, sessionId?: string | null) {
   return `${wsBase()}/api/v1/ws/screen?${params.toString()}`;
 }
 
-export default function SharePanel({ initialCode, sessionId }: { initialCode?: string; sessionId?: string }) {
+export default function SharePanel({
+  initialCode,
+  sessionId,
+  embedded,
+}: {
+  initialCode?: string;
+  sessionId?: string;
+  /** Rendered inline on another page (e.g. the connect screen) instead of as
+   *  its own route — skips the page chrome (back/end-session toolbar, outer
+   *  <main>) since the host page already provides that. */
+  embedded?: boolean;
+}) {
   const [token, setToken] = useState<string | null>(null);
   const [codeInput, setCodeInput] = useState(initialCode ?? '');
   const [pairing, setPairing] = useState(false);
@@ -211,6 +222,17 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
 
   useEffect(() => () => stopRef.current?.(), []);
 
+  // UltraViewer-style: the desktop app starts hosting the instant it has a
+  // token, no separate "Start sharing" click. A browser tab still needs the
+  // click — Chromium requires a user gesture for getDisplayMedia there, and
+  // a plain browser can't grant real control anyway, so nothing is lost.
+  useEffect(() => {
+    if (isDesktop() && token && status === 'idle') {
+      void startSharing();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   // Native remote control is only possible inside the desktop app.
   useEffect(() => {
     const canArm = isDesktop() && remoteControlAvailable();
@@ -223,8 +245,9 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
   useEffect(() => () => setRemoteControl(false), []);
 
   if (!token) {
+    const Wrapper = embedded ? 'div' : 'main';
     return (
-      <main style={{ maxWidth: '480px', margin: '0 auto', padding: '24px' }}>
+      <Wrapper style={embedded ? undefined : { maxWidth: '480px', margin: '0 auto', padding: '24px' }}>
         <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>Share your screen</h2>
         <p style={{ color: '#8f98ba', fontSize: '14px', marginBottom: '16px' }}>
           Enter the 6-digit pair code shown on the viewer's device.
@@ -250,7 +273,7 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
           </button>
           {error ? <p style={{ color: '#ff9b9b' }}>{error}</p> : null}
         </form>
-      </main>
+      </Wrapper>
     );
   }
 
@@ -259,14 +282,17 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
     window.location.assign(homePath());
   }
 
+  const Wrapper = embedded ? 'div' : 'main';
   return (
-    <main style={{ maxWidth: '720px', margin: '0 auto', padding: '24px' }}>
-      <div className="session-toolbar">
-        <button type="button" className="btn btn--ghost btn--sm" onClick={endAndLeave}>← Back to home</button>
-        {status === 'streaming' ? (
-          <button type="button" className="btn btn--danger btn--sm" onClick={endAndLeave}>End session</button>
-        ) : null}
-      </div>
+    <Wrapper style={embedded ? undefined : { maxWidth: '720px', margin: '0 auto', padding: '24px' }}>
+      {!embedded ? (
+        <div className="session-toolbar">
+          <button type="button" className="btn btn--ghost btn--sm" onClick={endAndLeave}>← Back to home</button>
+          {status === 'streaming' ? (
+            <button type="button" className="btn btn--danger btn--sm" onClick={endAndLeave}>End session</button>
+          ) : null}
+        </div>
+      ) : null}
       <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>Screen share</h2>
       <p style={{ color: '#8f98ba', fontSize: '14px', marginBottom: '16px' }}>
         Status: <strong>{status}</strong>
@@ -331,6 +357,6 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
         Browser requirement: Chrome/Edge over <code>localhost</code> or HTTPS. Over LAN HTTP, enable
         chrome://flags/#unsafely-treat-insecure-origin-as-secure and add this origin.
       </p>
-    </main>
+    </Wrapper>
   );
 }

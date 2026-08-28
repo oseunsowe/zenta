@@ -13,6 +13,8 @@ import {
   setUnattendedPassword,
   setViewerToken,
 } from '../lib/device';
+import { isDesktop } from '../lib/host';
+import SharePanel from './SharePanel';
 
 // Matches the pairing flow's rotation cadence elsewhere in the app — tight
 // enough to be TOTP-like, loose enough that reading the password aloud over a
@@ -34,6 +36,12 @@ export default function ConnectHome() {
   const [copied, setCopied] = useState<'id' | 'password' | null>(null);
   const [rotateCountdownMs, setRotateCountdownMs] = useState(ROTATE_INTERVAL_MS);
   const nextRotateAtRef = useRef(Date.now() + ROTATE_INTERVAL_MS);
+
+  // Computed post-mount (never during SSR) to avoid a hydration mismatch —
+  // window.__host may already be set by preload.js on the client's first
+  // render, but the server always renders as a plain browser.
+  const [runningInDesktopApp, setRunningInDesktopApp] = useState(false);
+  useEffect(() => setRunningInDesktopApp(isDesktop()), []);
 
   // Unattended access: a second, fixed password that does not rotate.
   const [unattendedEnabled, setUnattendedEnabled] = useState(false);
@@ -310,18 +318,30 @@ export default function ConnectHome() {
               )}
             </div>
 
-            <Link
-              className="btn btn--primary btn--block"
-              href={deviceId ? `/share?session=${encodeURIComponent(`d:${deviceId}`)}` : '#'}
-              aria-disabled={!deviceId}
-              style={{ marginTop: 8, pointerEvents: deviceId ? undefined : 'none' }}
-            >
-              Start sharing this screen
-            </Link>
-            <p className="faint" style={{ fontSize: 12, marginTop: 10, marginBottom: 0 }}>
-              Your screen is only shared while that page is open. Close it to end the
-              session instantly.
-            </p>
+            {runningInDesktopApp ? (
+              // UltraViewer parity: the desktop app hosts immediately, right on
+              // this screen — no extra click, no separate page to navigate to.
+              deviceId ? (
+                <div style={{ marginTop: 8 }}>
+                  <SharePanel sessionId={`d:${deviceId}`} embedded />
+                </div>
+              ) : null
+            ) : (
+              <>
+                <Link
+                  className="btn btn--primary btn--block"
+                  href={deviceId ? `/share?session=${encodeURIComponent(`d:${deviceId}`)}` : '#'}
+                  aria-disabled={!deviceId}
+                  style={{ marginTop: 8, pointerEvents: deviceId ? undefined : 'none' }}
+                >
+                  Start sharing this screen
+                </Link>
+                <p className="faint" style={{ fontSize: 12, marginTop: 10, marginBottom: 0 }}>
+                  Your screen is only shared while that page is open. Close it to end the
+                  session instantly.
+                </p>
+              </>
+            )}
           </section>
 
           {/* -------------------------------------------- control a remote -- */}

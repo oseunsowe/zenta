@@ -4,4 +4,4 @@
 # Zenta.exe. No reinstall and no rebuild needed — this file is read at startup.
 # Lines starting with # are ignored.
 #
-# https://your-server.example.com
+https://zentaremote.online
