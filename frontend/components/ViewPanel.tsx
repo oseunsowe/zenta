@@ -466,7 +466,7 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
           display: status === 'streaming' ? 'block' : 'none',
           minHeight: 0,
           touchAction: 'none',
-          cursor: sendingInput ? 'crosshair' : 'default',
+          cursor: 'default',
         }}
       />
 
