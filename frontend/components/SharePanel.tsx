@@ -161,7 +161,13 @@ export default function SharePanel({
       }
 
       const MIN_FRAME_MS = 50; // ceiling ~20 fps — self-paced, so this is a cap, not a target
-      const MAX_BUFFERED = 384_000; // wait, don't drop, when the socket is busy
+      // Kept deliberately small (roughly one frame's worth): this is *already
+      // encoded, unsent* video sitting in the socket. Every byte queued here
+      // is a byte of pure lag between what's happening on this screen and
+      // what the controller sees — for remote control, staying close to
+      // real-time matters far more than never skipping a frame under a slow
+      // link.
+      const MAX_BUFFERED = 65_536;
       let lastSent = 0;
 
       // Self-paced loop: send as fast as the socket drains, up to ~15 fps.
