@@ -401,11 +401,6 @@ export default function ConnectHome() {
             </p>
           </section>
         </div>
-
-        <p className="faint" style={{ fontSize: 13, textAlign: 'center', marginTop: 26 }}>
-          Have an account? <Link href="/login">Sign in</Link> for saved contacts and
-          share requests.
-        </p>
       </main>
     </div>
   );
