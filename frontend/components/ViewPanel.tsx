@@ -84,22 +84,35 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
     } catch {}
   }
 
-  function relativeCoords(event: React.MouseEvent<HTMLImageElement> | React.WheelEvent<HTMLImageElement>) {
-    const img = event.currentTarget;
+  // `object-fit: contain` scales the image to fit the element while keeping
+  // its aspect ratio, which almost always leaves letterboxing (black bars) on
+  // one axis — the rendered image is a smaller, centered rectangle inside the
+  // element's box, not the whole box. Dividing by the raw element rect (the
+  // old code) ignored that offset, so every click landed off by however much
+  // letterboxing there was — worse the more the host's screen and the
+  // viewer's window disagree on aspect ratio, which is the common case.
+  function imageRelativeCoords(img: HTMLImageElement, clientX: number, clientY: number) {
     const rect = img.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left) / rect.width,
-      y: (event.clientY - rect.top) / rect.height,
-    };
+    const naturalW = img.naturalWidth || rect.width;
+    const naturalH = img.naturalHeight || rect.height;
+    const scale = Math.min(rect.width / naturalW, rect.height / naturalH) || 1;
+    const renderedW = naturalW * scale;
+    const renderedH = naturalH * scale;
+    const offsetX = (rect.width - renderedW) / 2;
+    const offsetY = (rect.height - renderedH) / 2;
+    const x = (clientX - rect.left - offsetX) / renderedW;
+    const y = (clientY - rect.top - offsetY) / renderedH;
+    // Clicks in the letterbox padding itself clamp to the nearest edge
+    // instead of sending an out-of-picture coordinate.
+    return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+  }
+
+  function relativeCoords(event: React.MouseEvent<HTMLImageElement> | React.WheelEvent<HTMLImageElement>) {
+    return imageRelativeCoords(event.currentTarget, event.clientX, event.clientY);
   }
 
   function pointerCoords(event: React.PointerEvent<HTMLImageElement>) {
-    const img = event.currentTarget;
-    const rect = img.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left) / rect.width,
-      y: (event.clientY - rect.top) / rect.height,
-    };
+    return imageRelativeCoords(event.currentTarget, event.clientX, event.clientY);
   }
 
   function sendQuickAction(event: ControlEvent) {
@@ -408,7 +421,7 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
           if (!sendingInputRef.current) return;
           if (activePointerRef.current !== null && event.pointerId !== activePointerRef.current) return;
           const now = performance.now();
-          if (now - lastMoveSentRef.current < 40) return; // ~25 Hz
+          if (now - lastMoveSentRef.current < 16) return; // ~60 Hz
           lastMoveSentRef.current = now;
           const { x, y } = pointerCoords(event);
           if (pointerStartRef.current) {

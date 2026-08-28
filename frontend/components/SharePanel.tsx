@@ -83,7 +83,7 @@ export default function SharePanel({
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 15, max: 30 } },
+        video: { frameRate: { ideal: 20, max: 30 } },
         audio: false,
       });
     } catch (err) {
@@ -160,7 +160,7 @@ export default function SharePanel({
         return;
       }
 
-      const MIN_FRAME_MS = 66; // ceiling ~15 fps
+      const MIN_FRAME_MS = 50; // ceiling ~20 fps — self-paced, so this is a cap, not a target
       const MAX_BUFFERED = 384_000; // wait, don't drop, when the socket is busy
       let lastSent = 0;
 
