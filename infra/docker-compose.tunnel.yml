@@ -1,0 +1,99 @@
+# Two-computer testing over a Cloudflare Tunnel.
+#
+# Runs the full production stack on ONE machine and publishes it at a public
+# HTTPS URL. No VPS, no domain, no port forwarding, no Cloudflare account.
+# Both computers then open the same URL.
+#
+#   cp .env.example .env       # fill in JWT_SECRET + INVITE_CODE_HASHES
+#   docker compose -f docker-compose.tunnel.yml up -d --build
+#   docker compose -f docker-compose.tunnel.yml logs -f cloudflared
+#     -> grab the https://<random>.trycloudflare.com URL it prints
+#
+# HTTPS is not optional: the browser blocks getDisplayMedia() outside a secure
+# context, so screen sharing cannot work over a plain http:// LAN address.
+#
+# No service publishes a host port. Everything is reached through caddy on the
+# internal network, and only cloudflared talks to the outside — via an outbound
+# connection, so nothing is listening on your machine.
+
+services:
+  backend:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    env_file: .env
+    # Same pinning as docker-compose.prod.yml: `environment:` beats `env_file:`,
+    # keeping the SQLite databases on the volume instead of the container layer.
+    environment:
+      APP_ENV: production
+      USERS_DB_PATH: /app/state/users.sqlite3
+      STATE_FILE: /app/state/runtime_state.json
+      MEMORY_SQLITE_PATH: /app/state/memory.sqlite3
+      # Device IDs must survive redeploys or every machine gets a new
+      # ID and previously shared IDs stop resolving.
+      DEVICES_DB_PATH: /app/state/devices.sqlite3
+      # Same-origin behind Caddy — no browser CORS involved.
+      CORS_ALLOW_ORIGINS: ''
+    volumes:
+      - backend_state:/app/state
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5).status == 204 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        # Baked in at build time (see frontend/Dockerfile) for the marketing
+        # page's canonical URL, Open Graph image, and sitemap.xml.
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          require('http').get('http://127.0.0.1:3000/', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile.tunnel:/etc/caddy/Caddyfile:ro
+      # Drop the Windows installer in infra/downloads/ and it is served at
+      # /downloads/Zenta-Setup.exe. Read-only: Caddy never writes here.
+      - ./downloads:/srv/downloads:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # Quick tunnel: no account, no domain. The hostname is random and changes
+    # on every restart — see infra/README.md for the named-tunnel upgrade that
+    # gives you a stable URL on your own domain.
+    command: tunnel --no-autoupdate --url http://caddy:8080
+    depends_on:
+      - caddy
+
+volumes:
+  backend_state:

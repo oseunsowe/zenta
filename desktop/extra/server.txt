@@ -1,0 +1,7 @@
+# Zenta server URL.
+#
+# Edit the line below to point this build at your server, then restart
+# Zenta.exe. No reinstall and no rebuild needed — this file is read at startup.
+# Lines starting with # are ignored.
+#
+# https://your-server.example.com

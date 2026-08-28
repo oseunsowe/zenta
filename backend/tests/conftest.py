@@ -28,6 +28,9 @@ def _isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv('INVITE_RATE_LIMIT', '1000/minute')
     monkeypatch.setenv('LLM_PROVIDER', 'echo')
     monkeypatch.setenv('USERS_DB_PATH', str(tmp_path / 'users.sqlite3'))
+    monkeypatch.setenv('DEVICES_DB_PATH', str(tmp_path / 'devices.sqlite3'))
+    monkeypatch.setenv('DEVICE_ACCESS_ENABLED', 'true')
+    monkeypatch.setenv('DEVICE_CONNECT_RATE_LIMIT', '1000/minute')
 
     # Wipe modules so settings + state reload with new env.
     for mod in list(sys.modules):

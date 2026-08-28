@@ -2,6 +2,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.services import share_request as share_svc
 from app.services.auth import decode_session_token
+from app.services.pair_store import revoke_pair_lease, validate_pair_lease
 from app.services.screen_relay import relay
 
 router = APIRouter()
@@ -16,6 +17,12 @@ def _resolve_session_id(claims: dict, requested_session: str | None) -> str | No
     """
     sub = claims.get('sub') or ''
     if requested_session:
+        # Device-connect tokens (accountless flow) are minted for one specific
+        # session: the host's own `sub`. Both host and viewer carry that same
+        # sub, so an exact match is the authorization — a token for device A can
+        # never address device B's session.
+        if claims.get('scope') in {'device-host', 'device-viewer'}:
+            return requested_session if sub and sub == requested_session else None
         if claims.get('scope') == 'user' and sub.startswith('u:'):
             try:
                 user_id = int(sub[2:])
@@ -39,10 +46,26 @@ async def screen_socket(websocket: WebSocket):
         await websocket.close(code=1008)
         return
 
+    # A device-connect viewer shares the host's `sub` (that is how both land on
+    # the same relay session), so it must be explicitly barred from claiming the
+    # publisher slot — otherwise it could stream its own screen to the host.
+    if role == 'publisher' and claims.get('scope') == 'device-viewer':
+        await websocket.close(code=1008)
+        return
+
     session_id = _resolve_session_id(claims, session_param)
     if not session_id:
         await websocket.close(code=1008)
         return
+
+    # Pair-code sessions (no explicit session param) require a valid one-connection
+    # lease embedded in the viewer token. This blocks stale-token reconnects.
+    pair_lease_id: str | None = None
+    if not session_param and role == 'viewer':
+        pair_lease_id = claims.get('pair_lease')
+        if not validate_pair_lease(session_id, pair_lease_id):
+            await websocket.close(code=1008)
+            return
 
     await websocket.accept()
 
@@ -77,3 +100,5 @@ async def screen_socket(websocket: WebSocket):
         pass
     finally:
         await relay.unregister_viewer(session_id, websocket)
+        if not session_param and role == 'viewer':
+            revoke_pair_lease(pair_lease_id)

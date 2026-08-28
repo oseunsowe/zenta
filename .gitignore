@@ -5,6 +5,8 @@
 .env.*
 !.env.example
 infra/.env
+# Plaintext VPS credentials — never let this reach git history.
+vps.md
 
 # ============================================================
 #  Private / internal-only (kept out of the public repo)
@@ -21,6 +23,8 @@ infra/.env
 runtime_state.json
 backend/runtime_state.json
 memory.sqlite3
+# Dev compose writes SQLite + runtime state into the bind-mounted source tree.
+backend/state/
 
 # ============================================================
 #  Node / Next.js
@@ -74,6 +78,12 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+# Personal Claude Code permission overrides — not shared project config.
+.claude/settings.local.json
 *.swp
 $null
 **/$null
+
+# Built installers dropped in for Caddy to serve (see infra/README.md).
+infra/downloads/*
+!infra/downloads/.gitkeep

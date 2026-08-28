@@ -1,0 +1,51 @@
+# Reverse proxy for Cloudflare Tunnel testing (docker-compose.tunnel.yml).
+#
+# Plain HTTP on :8080 with no auto-TLS: Cloudflare terminates HTTPS at its edge
+# and cloudflared reaches this container over the internal Docker network. The
+# browser still gets a real certificate, which getDisplayMedia() requires.
+#
+# Same one-origin routing as Caddyfile.public.example, but addressing the other
+# containers by service name instead of 127.0.0.1.
+
+{
+	# Cloudflare sends the visitor's IP in X-Forwarded-For and cloudflared
+	# reaches us from the private Docker network. Trusting that range lets
+	# Caddy treat the forwarded address as the real client rather than
+	# cloudflared's container IP.
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Screen capture on our own origin only; deny camera/mic/geo.
+		Permissions-Policy "display-capture=(self), camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# API, widget loader, and WebSockets (/api/v1/ws/*) -> backend.
+	@backend path /api/* /widget/*
+	handle @backend {
+		reverse_proxy backend:8000
+	}
+
+	# Desktop installer, served straight off disk. The /download page links here
+	# and HEADs it to decide whether a build exists, so a missing file degrades
+	# to "no build published yet" rather than a broken link. No browse listing:
+	# only the exact filename is retrievable.
+	handle /downloads/* {
+		root * /srv
+		file_server
+	}
+
+	# Everything else -> Next.js frontend.
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

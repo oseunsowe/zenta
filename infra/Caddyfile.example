@@ -1,13 +1,26 @@
 # Internal-only reverse proxy. Replace the CIDR with your VPN/office subnet.
 # Caddy serves only to clients in the allowed range; everyone else gets 403.
+#
+# For a public deployment use Caddyfile.public.example instead — it adds the
+# security headers and automatic Let's Encrypt TLS this variant omits.
 
 internal.example.local {
     @internal remote_ip 10.0.0.0/8 192.168.0.0/16
+
     handle @internal {
-        reverse_proxy 127.0.0.1:3000
-        @api path /api/* /ws/*
-        reverse_proxy @api 127.0.0.1:8000
+        # API, widget loader, and WebSockets (/api/v1/ws/*) -> backend.
+        # This must be matched first; a bare reverse_proxy would swallow it.
+        @backend path /api/* /widget/*
+        handle @backend {
+            reverse_proxy 127.0.0.1:8000
+        }
+
+        # Everything else -> Next.js frontend.
+        handle {
+            reverse_proxy 127.0.0.1:3000
+        }
     }
+
     handle {
         respond 403
     }

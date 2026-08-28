@@ -64,11 +64,10 @@ The current screen sharing sends JPEG frames over WebSocket at 5 fps. Functional
 
 This is the right next-step, but it's a significant refactor (new STUN/TURN dependency, new signaling protocol). The current JPEG relay stays as a fallback for environments where WebRTC's UDP/STUN is blocked.
 
-### OS-level remote control (vs the current pointer-visualization)
+### OS-level remote control — done
 
-The viewer can now send pointer events that the publisher sees as a red dot overlay. **It does not actually control the publisher's mouse** because that requires a native helper:
-
-- A `robotjs`-equivalent module (Node + native bindings) on the publisher.
-- The publisher *must* be the Electron desktop runner, not a browser tab — browsers can't drive OS input.
-
-Add this when the desktop runner needs to grow into a real remote-control tool. The WebSocket input-channel is already plumbed; you'd add a Node service in the Electron main process that consumes events and drives `robotjs`.
+This used to require a native helper; it now has one. `desktop/remote-input.js`
+drives real OS mouse/keyboard via `@nut-tree-fork/nut-js` in the Electron main
+process, and `SharePanel.tsx` auto-arms it the moment a desktop-app host starts
+sharing. A browser tab still can't drive OS input — the host side needs the
+desktop app — but the viewer can be a plain browser.

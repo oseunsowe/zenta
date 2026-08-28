@@ -42,14 +42,20 @@ The backend stays loopback-only on the host machine — Cloudflare terminates TL
 
 Run the backend on a VPS, lock the frontend to talk to it, and protect the public surface with the existing stealth controls (invite hashes + rate limits + admin-token-gated CORS).
 
-1. Deploy with `infra/docker-compose.prod.yml` behind Caddy (`infra/Caddyfile.example`).
+1. Deploy with `infra/docker-compose.prod.yml` behind Caddy
+   (`infra/Caddyfile.public.example` for a public domain; `infra/Caddyfile.example`
+   only for a CIDR-restricted internal host). Start from `infra/.env.example`.
 2. Set in the deployed env:
    ```env
+   APP_ENV=production        # enables fail-fast startup checks
    BIND_MODE=loopback        # Caddy is the only ingress
-   CORS_ALLOW_ORIGINS=https://your-frontend.example
-   HEALTH_ALLOWED_CIDRS=     # leave empty; /health always 404 publicly
+   CORS_ALLOW_ORIGINS=       # empty: Caddy serves UI + API on one origin
+   HEALTH_ALLOWED_CIDRS=127.0.0.0/8,::1/128,172.16.0.0/12   # container healthcheck only
    ```
-3. Caddy listens on 443, allows only your team's CIDR (see `Caddyfile.example`).
+   Leave `HEALTH_ALLOWED_CIDRS` non-empty — the compose healthcheck calls the
+   backend from inside the Docker network, and `/health` still 404s publicly
+   because Caddy never proxies it.
+3. Caddy listens on 443 and terminates TLS. The app ports stay on loopback.
 
 ## Picking between them
 

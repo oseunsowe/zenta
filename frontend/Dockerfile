@@ -5,6 +5,11 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
+# NEXT_PUBLIC_* vars are inlined at build time, not read at container startup —
+# this has to be a build arg. Only affects the marketing page's canonical link,
+# Open Graph image, and sitemap.xml; falls back to localhost if unset.
+ARG NEXT_PUBLIC_SITE_URL
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 COPY package*.json ./
 RUN npm ci
 COPY . .

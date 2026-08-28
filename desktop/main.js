@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, session, desktopCapturer, shell } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, session, desktopCapturer, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
@@ -18,6 +18,8 @@ const remoteInput = require('./remote-input');
 let mainWindow;
 let backendProcess;
 let frontendProcess;
+let startupWarning = null;
+let effectiveFrontendUrl = null;
 
 const isPackaged = app.isPackaged || process.env.NODE_ENV === 'production';
 const FE_PORT = process.env.HOST_FE_PORT || '41733';
@@ -25,10 +27,57 @@ const FE_PORT = process.env.HOST_FE_PORT || '41733';
 // dev stack on :8000 (you can run both at once). Dev mode keeps :8000.
 // NOTE: scripts/build-frontend.js bakes this same URL into the UI — keep in sync.
 const BE_PORT = process.env.HOST_BE_PORT || (isPackaged ? '41800' : '8000');
-const BACKEND_URL = process.env.HOST_BACKEND_URL || `http://127.0.0.1:${BE_PORT}`;
+
+// Server URL baked in at build time by electron-builder:
+//   --config.extraMetadata.zenta.serverUrl=https://your-host
+// A thin/portable build has no bundled backend or frontend, and an end user who
+// double-clicks the exe has no environment variables set — so without this the
+// window would point at a local port that nothing is listening on. Env vars
+// still win, so a tester can retarget a build without rebuilding it.
+function bakedServerUrl() {
+  try {
+    return ((require('./package.json') || {}).zenta || {}).serverUrl || '';
+  } catch {
+    return ''; // package.json unreadable — fall through to local defaults
+  }
+}
+
+// A plain `server.txt` next to the executable overrides the baked URL. Quick
+// tunnels hand out a new hostname every restart, so without this a portable
+// build goes stale the moment the tunnel is recycled and has to be rebuilt and
+// redistributed. Editing one line in the extracted folder is enough instead.
+function serverUrlFromFile() {
+  try {
+    const dir = path.dirname(app.getPath('exe'));
+    const raw = fs.readFileSync(path.join(dir, 'server.txt'), 'utf8');
+    // Ignore blank lines and #-comments so the shipped file can explain itself.
+    const line = raw
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l && !l.startsWith('#'));
+    if (!line) return '';
+    return /^https?:\/\//i.test(line) ? line.replace(/\/+$/, '') : '';
+  } catch {
+    return '';
+  }
+}
+
+const BAKED_SERVER_URL = serverUrlFromFile() || bakedServerUrl();
+
+const BACKEND_URL =
+  process.env.HOST_BACKEND_URL || BAKED_SERVER_URL || `http://127.0.0.1:${BE_PORT}`;
 const FRONTEND_URL =
-  process.env.HOST_FRONTEND_URL || (isPackaged ? `http://127.0.0.1:${FE_PORT}` : 'http://127.0.0.1:3000');
+  process.env.HOST_FRONTEND_URL ||
+  BAKED_SERVER_URL ||
+  (isPackaged ? `http://127.0.0.1:${FE_PORT}` : 'http://127.0.0.1:3000');
+
+// A baked URL implies remote mode: don't try to spawn a local backend.
+const REMOTE_BACKEND = process.env.HOST_REMOTE_BACKEND === 'true' || Boolean(BAKED_SERVER_URL);
 const HOST_DEBUG = process.env.HOST_DEBUG === 'true';
+
+if (!effectiveFrontendUrl) {
+  effectiveFrontendUrl = FRONTEND_URL;
+}
 
 // SHA-256 of DEMO-1 / DEMO-2 / DEMO-3 — lets a fresh install register/log in.
 const DEMO_INVITE_HASHES = [
@@ -59,7 +108,12 @@ ipcMain.on('remote-control-available', (event) => {
   event.returnValue = remoteInput.available();
 });
 ipcMain.on('remote-control-enabled', (_event, enabled) => {
-  remoteControlEnabled = !!enabled;
+  const next = !!enabled;
+  // Disarming with keys still held would leave a modifier stuck down on this
+  // machine — e.g. Ctrl held at the moment the viewer disconnects makes every
+  // subsequent keystroke a shortcut. Always let go.
+  if (remoteControlEnabled && !next) void remoteInput.releaseAll();
+  remoteControlEnabled = next;
 });
 ipcMain.on('remote-input', (_event, controlEvent) => {
   if (!remoteControlEnabled) return;
@@ -119,8 +173,9 @@ function createWindow() {
 
 // Resolve when something is listening at the given http URL (or time out).
 function waitForServer(urlString, timeoutMs) {
-  const { hostname, port } = new URL(urlString);
-  const targetPort = Number(port) || 80;
+  const parsed = new URL(urlString);
+  const targetPort = Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80);
+  const hostname = parsed.hostname;
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve) => {
     const tryOnce = () => {
@@ -167,8 +222,8 @@ function persistedJwtSecret() {
 }
 
 function spawnBackend() {
-  if (process.env.HOST_REMOTE_BACKEND === 'true') {
-    debugLog('[backend] HOST_REMOTE_BACKEND=true — skipping local backend spawn');
+  if (REMOTE_BACKEND) {
+    debugLog('[backend] remote mode — skipping local backend spawn');
     return null;
   }
 
@@ -183,6 +238,17 @@ function spawnBackend() {
   };
 
   if (isPackaged) {
+    if (!fs.existsSync(bundledExe)) {
+      // Portable/thin builds may not include backend-runner.exe.
+      startupWarning =
+        'Local backend binary is missing (backend-runner.exe).\n\n' +
+        'Run the app in remote mode by setting:\n' +
+        'HOST_REMOTE_BACKEND=true\n' +
+        'HOST_FRONTEND_URL=https://YOUR_SERVER\n' +
+        'HOST_BACKEND_URL=https://YOUR_SERVER';
+      debugErr('[backend] missing bundled backend executable:', bundledExe);
+      return null;
+    }
     // Self-contained config so the app works on a fresh machine.
     const userData = app.getPath('userData');
     env.CORS_ALLOW_ORIGINS = `http://127.0.0.1:${FE_PORT},http://localhost:${FE_PORT}`;
@@ -205,13 +271,35 @@ function spawnBackend() {
 
 function spawnFrontend() {
   if (isPackaged) {
+    // Thin/portable build pointed at a hosted server: nothing to spawn, and
+    // this is the intended configuration rather than a degraded one — so load
+    // the remote URL directly and don't warn about a missing bundle.
+    if (BAKED_SERVER_URL && !process.env.HOST_FRONTEND_URL) {
+      effectiveFrontendUrl = FRONTEND_URL;
+      debugLog('[fe] remote mode — loading', FRONTEND_URL);
+      return null;
+    }
+
     // Run the bundled Next.js standalone server using Electron's own Node.
     const serverDir = path.join(process.resourcesPath || '', 'frontend');
     const serverJs = path.join(serverDir, 'server.js');
     if (!fs.existsSync(serverJs)) {
-      debugErr('[fe] bundled frontend server.js missing at', serverJs);
+      const fallback = process.env.HOST_FRONTEND_URL || BAKED_SERVER_URL;
+      if (fallback) {
+        effectiveFrontendUrl = fallback;
+        startupWarning =
+          'Bundled frontend is missing, falling back to remote mode.\n\n' +
+          `Using ${fallback}`;
+        debugErr('[fe] bundled frontend missing, using remote fallback:', fallback);
+      } else {
+        startupWarning =
+          'Bundled frontend server.js is missing.\n\n' +
+          'Set HOST_FRONTEND_URL to your deployed web app URL and relaunch.';
+        debugErr('[fe] bundled frontend server.js missing at', serverJs);
+      }
       return null;
     }
+    effectiveFrontendUrl = FRONTEND_URL;
     return spawn(process.execPath, [serverJs], {
       cwd: serverDir,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -248,10 +336,26 @@ function startChildProcesses() {
   if (frontendProcess) {
     frontendProcess.stdout.on('data', (d) => debugLog(`[fe] ${d}`));
     frontendProcess.stderr.on('data', (d) => debugErr(`[fe] ${d}`));
+    frontendProcess.on('error', (err) => {
+      debugErr('[fe] spawn error:', err && err.message ? err.message : err);
+    });
   }
   if (backendProcess) {
     backendProcess.stdout.on('data', (d) => debugLog(`[be] ${d}`));
     backendProcess.stderr.on('data', (d) => debugErr(`[be] ${d}`));
+    backendProcess.on('error', (err) => {
+      debugErr('[be] spawn error:', err && err.message ? err.message : err);
+      if (err && err.code === 'ENOENT') {
+        dialog.showErrorBox(
+          'Zenta startup warning',
+          'Local backend binary not found.\n\n' +
+            'Use remote mode:\n' +
+            'HOST_REMOTE_BACKEND=true\n' +
+            'HOST_FRONTEND_URL=https://YOUR_SERVER\n' +
+            'HOST_BACKEND_URL=https://YOUR_SERVER'
+        );
+      }
+    });
   }
 }
 
@@ -287,11 +391,22 @@ app.on('ready', async () => {
   startChildProcesses();
   createWindow();
 
+  if (startupWarning) {
+    dialog.showErrorBox('Zenta startup warning', startupWarning);
+  }
+
   // Wait for the UI server (bundled standalone, dev server, or remote) before loading.
-  const ready = await waitForServer(FRONTEND_URL, 45000);
-  debugLog('[fe] server ready:', ready, FRONTEND_URL);
+  const ready = await waitForServer(effectiveFrontendUrl, 45000);
+  debugLog('[fe] server ready:', ready, effectiveFrontendUrl);
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.loadURL(FRONTEND_URL);
+    if (!ready) {
+      startupWarning =
+        (startupWarning ? `${startupWarning}\n\n` : '') +
+        `Could not reach UI at ${effectiveFrontendUrl}.`;
+    }
+    // "/" is the public marketing page; the desktop app's home screen is the
+    // accountless connect flow at "/connect".
+    mainWindow.loadURL(`${effectiveFrontendUrl.replace(/\/$/, '')}/connect`);
   }
 });
 

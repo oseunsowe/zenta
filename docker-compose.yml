@@ -1,22 +1,54 @@
-version: '3.9'
+# LOCAL DEVELOPMENT ONLY — hot reload, source bind-mounted, no TLS.
+# For deployment use infra/docker-compose.prod.yml (see infra/README.md).
+#
+#   docker compose up --build
+#   frontend -> http://127.0.0.1:3000     backend -> http://127.0.0.1:8000
+#
+# Host ports are published on 127.0.0.1 so nothing is reachable from the LAN.
 
 services:
   frontend:
     build:
       context: ./frontend
+      # The final stage is the slim standalone runtime with no dev deps and no
+      # Next CLI. `npm run dev` needs the build stage's node_modules.
+      target: build
     ports:
       - '127.0.0.1:3000:3000'
     environment:
-      - NODE_ENV=development
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: '1'
+      # The browser runs on the host, so it needs the published backend port.
+      NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:8000
     volumes:
       - ./frontend:/app
-    command: npm run dev -- --hostname 127.0.0.1
+      # Anonymous volume keeps the image's node_modules from being shadowed by
+      # the host directory (which may be absent or built for another platform).
+      - /app/node_modules
+      - /app/.next
+    # 0.0.0.0 inside the container — binding 127.0.0.1 would make the process
+    # unreachable through the published port.
+    command: npm run dev -- --hostname 0.0.0.0 --port 3000
 
   backend:
     build:
       context: ./backend
+    # Root in dev only: the bind mount is owned by the host user, and the
+    # image's non-root appuser cannot create the SQLite files inside it.
+    user: root
     ports:
       - '127.0.0.1:8000:8000'
+    environment:
+      APP_ENV: development
+      # Dev secret — production requires a real one (see infra/.env.example).
+      JWT_SECRET: dev-only-insecure-secret-not-for-deployment
+      # The bind mount replaces /app, so keep state inside the mounted tree.
+      USERS_DB_PATH: /app/state/users.sqlite3
+      STATE_FILE: /app/state/runtime_state.json
+      MEMORY_SQLITE_PATH: /app/state/memory.sqlite3
+      CORS_ALLOW_ORIGINS: http://127.0.0.1:3000
     volumes:
       - ./backend:/app
-    command: uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+    # The build context is ./backend, so the package is `app`, not
+    # `backend.app` — the latter does not exist inside the container.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

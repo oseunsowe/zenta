@@ -1,10 +1,25 @@
 // Safe accessor for the Electron desktop bridge (window.__host). In a normal
 // browser this is absent, so every call no-ops and `isDesktop()` is false.
 
+interface KeyModifiers {
+  ctrl?: boolean;
+  shift?: boolean;
+  alt?: boolean;
+  meta?: boolean;
+}
+
 export type ControlEvent =
   | { type: 'move' | 'down' | 'up' | 'click' | 'dblclick'; x: number; y: number; button?: number }
+  // dy/dx are scroll notches, NOT raw pixel deltas — see wheelNotches() in
+  // ViewPanel. The host injects these numbers directly as scroll units.
   | { type: 'wheel'; x: number; y: number; dy: number; dx?: number }
-  | { type: 'key'; key: string; code?: string; ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean };
+  // Held keys: the host presses on keydown and releases on keyup, so modifiers
+  // can be combined with the mouse.
+  | ({ type: 'keydown' | 'keyup'; key: string; code?: string } & KeyModifiers)
+  // Release everything the host is holding (viewer lost focus or disconnected).
+  | { type: 'keyreset' }
+  // Legacy press-and-release in one event; still used by the quick actions.
+  | ({ type: 'key'; key: string; code?: string } & KeyModifiers);
 
 interface HostBridge {
   desktop?: boolean;

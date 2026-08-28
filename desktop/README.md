@@ -30,10 +30,16 @@ cannot, so this only works when the person being controlled runs this app.
 
 - Native input is performed in the main process via `@nut-tree-fork/nut-js`
   (`remote-input.js`); the renderer can only *request* it over the preload bridge.
-- The sharer must explicitly tick **"allow remote control"** on the share screen.
-  The main process keeps its own consent flag (`remote-control-enabled`) and
-  ignores all input unless it's on; control is revoked when the share screen
-  unmounts.
+- Control is **armed automatically** while the share screen is open in the
+  desktop app (UltraViewer-style). The gate is the remote password, not a
+  checkbox: only someone holding the current 6-digit password can join the
+  session and send input.
+- The main process still keeps its own consent flag (`remote-control-enabled`)
+  and ignores all input unless it is on. Control is revoked when the share
+  screen unmounts, and every key still held is released at that moment so a
+  modifier cannot be left stuck down.
+- The password rotates on demand, and regenerates automatically when a viewer
+  connection drops, so a leaked password stops working after a disconnect.
 - Screen capture is granted to the renderer via `setDisplayMediaRequestHandler`
   (whole primary screen), which the input coordinate mapping assumes.
 - If the native module fails to load, control silently stays unavailable and the
@@ -57,11 +63,65 @@ HOST_DISABLE_AUTO_START=true HOST_FRONTEND_URL=http://127.0.0.1:3000 npm start
 
 ## Package an installer
 
+**Windows only.** The target is NSIS and `scripts/build-backend.js` runs
+PyInstaller, which emits a Windows `.exe` only when run on Windows. A Linux
+devcontainer or WSL shell cannot produce this build, and the repo has to be
+checked out on the Windows side.
+
+Check the toolchain before starting — it answers in under a second, instead of
+failing several minutes into PyInstaller:
+
 ```bash
 cd desktop
 npm install
-npm run dist   # output in desktop/dist/
+npm run doctor   # verifies platform, Python, frontend deps; exits 1 with fixes
+npm run dist     # output in desktop/dist/Zenta-Setup.exe
 ```
+
+`doctor` also runs automatically as the first step of `prepack`/`predist`, so a
+build that cannot succeed stops immediately rather than part-way through.
+
+### Portable Windows build — cross-buildable from Linux/macOS
+
+A thin client that talks to your hosted server: no bundled backend, no bundled
+frontend, so nothing has to be compiled and nothing has to be signed. This
+**does** build from Linux (no Windows, no wine, no Python) in about 90 seconds.
+
+```bash
+npm install
+npm run dist:portable   # -> desktop/dist/Zenta-Portable-Windows.zip (~120 MB)
+```
+
+Remote control still works: `@nut-tree-fork/libnut` ships prebuilt binaries for
+every platform, and the Windows one is packaged and unpacked from the asar.
+
+**Pointing it at a server.** The zip contains a `server.txt` next to `Zenta.exe`.
+Whoever runs it can edit that one line and restart — no rebuild, no reinstall:
+
+```
+# Lines starting with # are ignored.
+https://your-server.example.com
+```
+
+That matters because a Cloudflare quick tunnel hands out a new hostname on
+every restart, which would otherwise strand every copy you had distributed.
+
+Resolution order, first match wins:
+
+1. `HOST_FRONTEND_URL` / `HOST_BACKEND_URL` environment variables
+2. `server.txt` next to the executable
+3. URL baked at build time:
+   `--config.extraMetadata.zenta.serverUrl=https://your-server`
+4. Local bundled servers (the full installer build)
+
+To pre-fill it so the download works on first run, write the URL into
+`extra/server.txt` before building — that file is copied next to the exe.
+
+### What the portable build does *not* include
+
+No bundled FastAPI backend and no bundled UI, so it is useless without a
+reachable server. For a self-contained installer that runs its own backend, use
+the NSIS build above — that one is genuinely Windows-only.
 
 ## Environment
 

@@ -4,6 +4,12 @@
 // this). Translates normalized control events from a viewer into real OS mouse
 // and keyboard input via @nut-tree-fork/nut-js. Everything is wrapped so a
 // malformed event can never crash the host app.
+//
+// Keys use press/release rather than "type", so holding a key on the viewer
+// holds it on the host: Shift+drag, Ctrl+click, arrow-key repeat and
+// click-and-drag all behave like a local keyboard. Every key we press is
+// tracked so releaseAll() can clear a stuck modifier if the viewer disconnects
+// mid-chord.
 
 let nut = null;
 let loadError = null;
@@ -32,42 +38,101 @@ function buttonFor(button) {
   return nut.Button.LEFT;
 }
 
-// Map a browser KeyboardEvent.key to a nut-js Key for non-character keys.
-function specialKey(key) {
-  if (!nut) return null;
-  const K = nut.Key;
-  const map = {
-    Enter: K.Enter, Return: K.Return || K.Enter, Backspace: K.Backspace, Tab: K.Tab,
-    Escape: K.Escape, Delete: K.Delete, Insert: K.Insert, ' ': K.Space, Spacebar: K.Space,
-    ArrowUp: K.Up, ArrowDown: K.Down, ArrowLeft: K.Left, ArrowRight: K.Right,
-    Home: K.Home, End: K.End, PageUp: K.PageUp, PageDown: K.PageDown,
-    CapsLock: K.CapsLock,
-    F1: K.F1, F2: K.F2, F3: K.F3, F4: K.F4, F5: K.F5, F6: K.F6,
-    F7: K.F7, F8: K.F8, F9: K.F9, F10: K.F10, F11: K.F11, F12: K.F12,
-  };
-  return map[key] || null;
+// KeyboardEvent.code -> nut-js Key name. `code` is the physical key, so it is
+// correct regardless of modifiers or layout shifting: Ctrl+Shift+'/' still
+// reports code "Slash", whereas `key` would report "?" and fail to map.
+const CODE_TO_KEY = {
+  Escape: 'Escape', Backquote: 'Grave', Minus: 'Minus', Equal: 'Equal',
+  Backspace: 'Backspace', Tab: 'Tab', BracketLeft: 'LeftBracket',
+  BracketRight: 'RightBracket', Backslash: 'Backslash', CapsLock: 'CapsLock',
+  Semicolon: 'Semicolon', Quote: 'Quote', Enter: 'Enter', Comma: 'Comma',
+  Period: 'Period', Slash: 'Slash', Space: 'Space',
+  Insert: 'Insert', Delete: 'Delete', Home: 'Home', End: 'End',
+  PageUp: 'PageUp', PageDown: 'PageDown',
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  PrintScreen: 'Print', ScrollLock: 'ScrollLock', Pause: 'Pause',
+  ContextMenu: 'Menu', NumLock: 'NumLock',
+  NumpadDivide: 'Divide', NumpadMultiply: 'Multiply',
+  NumpadSubtract: 'Subtract', NumpadAdd: 'Add', NumpadDecimal: 'Decimal',
+  NumpadEnter: 'Enter',
+  ControlLeft: 'LeftControl', ControlRight: 'RightControl',
+  ShiftLeft: 'LeftShift', ShiftRight: 'RightShift',
+  AltLeft: 'LeftAlt', AltRight: 'RightAlt',
+  MetaLeft: 'LeftSuper', MetaRight: 'RightSuper',
+};
+for (let i = 0; i <= 9; i += 1) {
+  CODE_TO_KEY[`Digit${i}`] = `Num${i}`;
+  CODE_TO_KEY[`Numpad${i}`] = `NumPad${i}`;
+}
+for (let c = 65; c <= 90; c += 1) {
+  CODE_TO_KEY[`Key${String.fromCharCode(c)}`] = String.fromCharCode(c);
+}
+for (let i = 1; i <= 12; i += 1) {
+  CODE_TO_KEY[`F${i}`] = `F${i}`;
 }
 
-// Map a single printable character to a nut-js Key (used for modifier combos
-// like Ctrl+C, where typing the raw string won't carry the modifier).
-function charKey(ch) {
-  if (!nut || !ch || ch.length !== 1) return null;
+// Fallback for senders that only provide `key` (older clients, quick actions).
+const KEY_TO_KEY = {
+  Enter: 'Enter', Backspace: 'Backspace', Tab: 'Tab', Escape: 'Escape',
+  Delete: 'Delete', Insert: 'Insert', ' ': 'Space', Spacebar: 'Space',
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+  CapsLock: 'CapsLock', Control: 'LeftControl', Shift: 'LeftShift',
+  Alt: 'LeftAlt', Meta: 'LeftSuper',
+};
+
+// Resolve an event to a nut-js Key value, or null when unmappable.
+function resolveKey(event) {
+  if (!nut) return null;
   const K = nut.Key;
-  const upper = ch.toUpperCase();
-  if (upper >= 'A' && upper <= 'Z') return K[upper];
-  if (ch >= '0' && ch <= '9') return K['Num' + ch];
+
+  const byCode = event.code && CODE_TO_KEY[event.code];
+  if (byCode && K[byCode] !== undefined) return K[byCode];
+
+  const key = event.key;
+  if (!key) return null;
+
+  const byName = KEY_TO_KEY[key];
+  if (byName && K[byName] !== undefined) return K[byName];
+
+  if (/^F([1-9]|1[0-2])$/.test(key) && K[key] !== undefined) return K[key];
+
+  // Single printable character with no usable code (e.g. synthetic events).
+  if (key.length === 1) {
+    const upper = key.toUpperCase();
+    if (upper >= 'A' && upper <= 'Z') return K[upper];
+    if (key >= '0' && key <= '9') return K[`Num${key}`];
+  }
   return null;
 }
 
-function modifierKeys(event) {
-  if (!nut) return [];
-  const K = nut.Key;
-  const mods = [];
-  if (event.ctrl) mods.push(K.LeftControl);
-  if (event.shift) mods.push(K.LeftShift);
-  if (event.alt) mods.push(K.LeftAlt);
-  if (event.meta) mods.push(K.LeftSuper);
-  return mods;
+// Keys currently held down by the remote viewer, so we can always let go.
+const held = new Set();
+
+async function pressKey(k) {
+  await nut.keyboard.pressKey(k);
+  held.add(k);
+}
+
+async function releaseKey(k) {
+  held.delete(k);
+  await nut.keyboard.releaseKey(k);
+}
+
+// Release everything the viewer left pressed. Called when control is disarmed
+// or the session ends — otherwise a modifier held at disconnect stays down on
+// the host machine and makes it unusable.
+async function releaseAll() {
+  if (!nut) return;
+  const stuck = Array.from(held);
+  held.clear();
+  for (const k of stuck) {
+    try {
+      await nut.keyboard.releaseKey(k);
+    } catch {
+      /* best effort */
+    }
+  }
 }
 
 // display: { x, y, width, height } in screen coordinates (from electron `screen`).
@@ -75,6 +140,14 @@ function toPoint(event, display) {
   const px = Math.round(display.x + Math.min(Math.max(event.x ?? 0, 0), 1) * display.width);
   const py = Math.round(display.y + Math.min(Math.max(event.y ?? 0, 0), 1) * display.height);
   return new nut.Point(px, py);
+}
+
+// Wheel deltas arrive already normalized to notches by the sender. Clamp so a
+// runaway value cannot spin the host's scroll for thousands of lines.
+function notches(value) {
+  const n = Math.round(value || 0);
+  if (!n) return 0;
+  return Math.max(-30, Math.min(30, n));
 }
 
 async function execute(event, display) {
@@ -98,28 +171,51 @@ async function execute(event, display) {
         break;
       case 'dblclick':
         await nut.mouse.setPosition(toPoint(event, display));
-        await nut.mouse.click(buttonFor(event.button));
-        await nut.mouse.click(buttonFor(event.button));
+        await nut.mouse.doubleClick(buttonFor(event.button));
         break;
       case 'wheel': {
-        const dy = Math.round(event.dy || 0);
-        if (dy > 0) await nut.mouse.scrollDown(Math.min(dy, 600));
-        else if (dy < 0) await nut.mouse.scrollUp(Math.min(-dy, 600));
+        // Windows delivers wheel input to the window under the cursor, so the
+        // pointer has to be where the viewer is pointing before we scroll —
+        // otherwise the scroll lands on whatever was last hovered.
+        await nut.mouse.setPosition(toPoint(event, display));
+        const dy = notches(event.dy);
+        const dx = notches(event.dx);
+        if (dy > 0) await nut.mouse.scrollDown(dy);
+        else if (dy < 0) await nut.mouse.scrollUp(-dy);
+        if (dx > 0) await nut.mouse.scrollRight(dx);
+        else if (dx < 0) await nut.mouse.scrollLeft(-dx);
         break;
       }
+      case 'keydown': {
+        const k = resolveKey(event);
+        if (k !== null) await pressKey(k);
+        break;
+      }
+      case 'keyup': {
+        const k = resolveKey(event);
+        if (k !== null) await releaseKey(k);
+        break;
+      }
+      case 'keyreset':
+        await releaseAll();
+        break;
+      // Legacy single-shot key event: press and release with modifiers held
+      // around it. Kept so older viewers and the quick-action buttons work.
       case 'key': {
         const key = event.key;
         if (!key || key === 'Control' || key === 'Shift' || key === 'Alt' || key === 'Meta') break;
-        const mods = modifierKeys(event);
-        const special = specialKey(key);
-        if (mods.length > 0) {
-          const main = special || charKey(key);
-          if (main) await nut.keyboard.type(...mods, main);
-        } else if (special) {
-          await nut.keyboard.type(special);
-        } else if (key.length === 1) {
-          await nut.keyboard.type(key);
-        }
+        const K = nut.Key;
+        const mods = [];
+        if (event.ctrl) mods.push(K.LeftControl);
+        if (event.shift) mods.push(K.LeftShift);
+        if (event.alt) mods.push(K.LeftAlt);
+        if (event.meta) mods.push(K.LeftSuper);
+        const main = resolveKey(event);
+        if (main === null) break;
+        for (const m of mods) await pressKey(m);
+        await pressKey(main);
+        await releaseKey(main);
+        for (const m of mods.reverse()) await releaseKey(m);
         break;
       }
       default:
@@ -130,4 +226,4 @@ async function execute(event, display) {
   }
 }
 
-module.exports = { available, getLoadError, execute };
+module.exports = { available, getLoadError, execute, releaseAll, resolveKey, notches };

@@ -1,9 +1,13 @@
 import secrets
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     app_name: str = 'Echoface API'
     api_prefix: str = '/api/v1'
+    # 'development' (default) or 'production'. Production enables fail-fast
+    # startup checks in main.py instead of log warnings.
+    app_env: str = 'development'
     invite_only: bool = True
     backend_host: str = '127.0.0.1'
     backend_port: int = 8000
@@ -39,6 +43,15 @@ class Settings(BaseSettings):
     memory_sqlite_path: str = 'memory.sqlite3'
     memory_window: int = 10
 
+    # UltraViewer-style device connect: a machine claims a permanent numeric ID
+    # and shows a rotating password, with no account and no invite code. This
+    # deliberately bypasses INVITE_ONLY, so set it to false on a deployment that
+    # must stay invite-gated.
+    device_access_enabled: bool = True
+    devices_db_path: str = 'devices.sqlite3'
+    # Connect attempts per IP. Per-device lockout is separate and additive.
+    device_connect_rate_limit: str = '10/minute'
+
     # User accounts (SQLite).
     users_db_path: str = 'users.sqlite3'
     # If true, /auth/register requires a valid invite code in the body.
@@ -65,6 +78,18 @@ class Settings(BaseSettings):
 
     # Comma-separated CIDR ranges allowed to hit /health (loopback by default).
     health_allowed_cidrs: str = '127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'
+
+    @field_validator('jwt_secret')
+    @classmethod
+    def _reject_empty_jwt_secret(cls, value: str) -> str:
+        """`JWT_SECRET=` (present but empty) must never reach PyJWT.
+
+        pydantic-settings assigns the empty string rather than falling back to
+        the generated default, and PyJWT will happily sign HS256 with an empty
+        key — so anyone could forge a token for any sub/scope. Fall back to an
+        ephemeral random secret; main.py hard-fails on this in production.
+        """
+        return value.strip() or secrets.token_urlsafe(48)
 
     class Config:
         env_file = '.env'

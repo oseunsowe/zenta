@@ -7,13 +7,16 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "doctor": "node scripts/doctor.js",
+    "test": "node scripts/test-remote-input.js",
     "clean": "node scripts/clean.js",
     "build:backend": "node scripts/build-backend.js",
     "build:frontend": "node scripts/build-frontend.js",
-    "prepack": "npm run clean && npm run build:backend && npm run build:frontend",
-    "predist": "npm run clean && npm run build:backend && npm run build:frontend",
+    "prepack": "npm run doctor && npm run clean && npm run build:backend && npm run build:frontend",
+    "predist": "npm run doctor && npm run clean && npm run build:backend && npm run build:frontend",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:portable": "node scripts/doctor.js --portable && electron-builder --win zip --config.win.artifactName=Zenta-Portable-Windows.zip --config.win.signAndEditExecutable=false"
   },
   "devDependencies": {
     "electron": "^26.2.0",
@@ -36,6 +39,12 @@
         "to": "."
       }
     ],
+    "extraFiles": [
+      {
+        "from": "extra/server.txt",
+        "to": "server.txt"
+      }
+    ],
     "win": {
       "target": [
         "nsis"
@@ -45,7 +54,8 @@
       "oneClick": false,
       "perMachine": false,
       "allowElevation": true,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Zenta-Setup.exe"
     }
   },
   "dependencies": {

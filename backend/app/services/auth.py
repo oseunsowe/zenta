@@ -29,7 +29,7 @@ def issue_session_token(code: str) -> str:
     return issue_session_token_for_sub(_hash(code)[:16])
 
 
-def issue_session_token_for_sub(sub: str, scope: str = 'companion') -> str:
+def issue_session_token_for_sub(sub: str, scope: str = 'companion', extra_claims: dict | None = None) -> str:
     now = int(time.time())
     payload = {
         'sub': sub,
@@ -37,6 +37,8 @@ def issue_session_token_for_sub(sub: str, scope: str = 'companion') -> str:
         'exp': now + settings.jwt_ttl_seconds,
         'scope': scope,
     }
+    if extra_claims:
+        payload.update(extra_claims)
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 

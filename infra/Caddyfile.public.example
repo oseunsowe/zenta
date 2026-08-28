@@ -28,6 +28,16 @@ zenta.example.com {
         reverse_proxy 127.0.0.1:8000
     }
 
+    # --- Desktop installer, served straight off disk ---
+    # Put the built installer at /srv/downloads/Zenta-Setup.exe on the VPS.
+    # The /download page HEADs this path, so a missing file shows as
+    # "no build published yet" instead of a broken link.
+    # No `browse`: only the exact filename is retrievable, not a directory index.
+    handle /downloads/* {
+        root * /srv
+        file_server
+    }
+
     # --- Everything else -> Next.js frontend ---
     handle {
         reverse_proxy 127.0.0.1:3000

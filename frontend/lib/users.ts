@@ -104,3 +104,12 @@ export async function changePassword(currentPassword: string, newPassword: strin
 export function logout() {
   clearUserSession();
 }
+
+/**
+ * Where "back home" should land. `/connect` is the accountless connect screen
+ * (`/` is the public marketing page), so a signed-in user ending a session
+ * belongs on their dashboard instead.
+ */
+export function homePath(): string {
+  return getStoredUserToken() ? '/dashboard' : '/connect';
+}

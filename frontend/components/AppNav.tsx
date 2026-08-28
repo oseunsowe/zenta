@@ -7,7 +7,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { User, logout } from '../lib/users';
 
 const LINKS = [
-  { href: '/', label: 'Home' },
+  { href: '/dashboard', label: 'Home' },
   { href: '/requests', label: 'Requests' },
   { href: '/account', label: 'Account' },
 ];
@@ -42,7 +42,7 @@ export default function AppNav({ user, incomingCount = 0 }: { user: User; incomi
 
   return (
     <header className="topbar">
-      <Link href="/" className="topbar__brand" aria-label="Zenta home">
+      <Link href="/dashboard" className="topbar__brand" aria-label="Zenta home">
         <span className="brand-logo">Z</span>
         <span>Zenta</span>
       </Link>

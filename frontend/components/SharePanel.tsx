@@ -3,7 +3,8 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 
 import { claimPair } from '../lib/pair';
-import { getStoredUserToken } from '../lib/users';
+import { getStoredUserToken, homePath } from '../lib/users';
+import { storedDeviceToken } from '../lib/device';
 import { wsBase } from '../lib/endpoints';
 import { applyRemoteInput, isDesktop, remoteControlAvailable, setRemoteControl, type ControlEvent } from '../lib/host';
 
@@ -21,11 +22,10 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
   const [error, setError] = useState<string | null>(null);
   const [viewers, setViewers] = useState<number | null>(null);
   const [acceptInput, setAcceptInput] = useState(false);
-  const [allowControl, setAllowControl] = useState(false);
   const [canControl, setCanControl] = useState(false);
   const [remotePointer, setRemotePointer] = useState<{ x: number; y: number } | null>(null);
   const acceptInputRef = useRef(false);
-  const allowControlRef = useRef(false);
+  const remoteControlArmedRef = useRef(false);
   const previewRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -34,7 +34,9 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
   useEffect(() => {
     // session-id mode: use stored user JWT, no pair-code dance.
     if (sessionId && !token) {
-      const userToken = getStoredUserToken();
+      // Accountless device flow has no user JWT — fall back to this
+      // machine's device token, which is scoped to its own session.
+      const userToken = getStoredUserToken() ?? storedDeviceToken();
       if (userToken) {
         setToken(userToken);
         return;
@@ -191,11 +193,11 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
         return;
       }
       // Visual feedback dot for positional events.
-      if ((acceptInputRef.current || allowControlRef.current) && 'x' in msg && typeof msg.x === 'number') {
+      if ((acceptInputRef.current || remoteControlArmedRef.current) && 'x' in msg && typeof msg.x === 'number') {
         setRemotePointer({ x: msg.x, y: msg.y });
       }
-      // Real OS input — desktop only, and only with explicit consent.
-      if (allowControlRef.current) {
+      // Real OS input — auto-armed in desktop mode (UltraViewer-style host).
+      if (remoteControlArmedRef.current) {
         applyRemoteInput(msg);
       }
     };
@@ -211,14 +213,13 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
 
   // Native remote control is only possible inside the desktop app.
   useEffect(() => {
-    setCanControl(isDesktop() && remoteControlAvailable());
+    const canArm = isDesktop() && remoteControlAvailable();
+    setCanControl(canArm);
+    remoteControlArmedRef.current = canArm;
+    setRemoteControl(canArm);
   }, []);
 
-  // Keep the main-process consent flag in sync, and always revoke on unmount.
-  useEffect(() => {
-    allowControlRef.current = allowControl;
-    setRemoteControl(allowControl);
-  }, [allowControl]);
+  // Always revoke on unmount.
   useEffect(() => () => setRemoteControl(false), []);
 
   if (!token) {
@@ -255,7 +256,7 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
 
   function endAndLeave() {
     stopRef.current?.();
-    window.location.assign('/');
+    window.location.assign(homePath());
   }
 
   return (
@@ -295,20 +296,14 @@ export default function SharePanel({ initialCode, sessionId }: { initialCode?: s
         show remote pointer
       </label>
 
-      <label
-        style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginLeft: '12px', fontSize: '13px', color: allowControl ? '#7ee0a0' : canControl ? '#aab1d8' : '#5a6388' }}
+      <span
+        style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginLeft: '12px', fontSize: '13px', color: canControl ? '#7ee0a0' : '#5a6388' }}
         title={canControl
-          ? 'Let the viewer control your mouse and keyboard. You can turn this off at any time.'
+          ? 'Remote control is automatically enabled while this share page is open in the desktop app.'
           : 'Remote control requires the Zenta desktop app (a browser cannot grant OS control).'}
       >
-        <input
-          type="checkbox"
-          checked={allowControl}
-          disabled={!canControl}
-          onChange={(event) => setAllowControl(event.target.checked)}
-        />
-        {allowControl ? '🖱 remote control ON' : `allow remote control${canControl ? '' : ' (desktop app only)'}`}
-      </label>
+        {canControl ? '🖱 remote control armed automatically' : 'remote control unavailable in browser host mode'}
+      </span>
 
       {error ? <p style={{ color: '#ff9b9b', marginTop: '12px' }}>{error}</p> : null}
 

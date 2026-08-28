@@ -9,7 +9,7 @@ from app.schemas import (
     PairStartResponse,
 )
 from app.services.auth import decode_session_token, issue_session_token_for_sub
-from app.services.pair_store import claim_pair_code, issue_pair_code
+from app.services.pair_store import claim_pair_code, issue_pair_code, issue_pair_lease
 
 router = APIRouter()
 
@@ -60,4 +60,6 @@ async def pair_claim(payload: PairClaimRequest):
     sub = claim_pair_code(payload.code.strip())
     if not sub:
         raise HTTPException(status_code=404, detail='Pair code expired or invalid')
-    return PairClaimResponse(authorized=True, token=issue_session_token_for_sub(sub))
+    lease_id, _ttl = issue_pair_lease(sub)
+    token = issue_session_token_for_sub(sub, scope='companion', extra_claims={'pair_lease': lease_id})
+    return PairClaimResponse(authorized=True, token=token)
