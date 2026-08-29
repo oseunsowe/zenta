@@ -142,12 +142,15 @@ function toPoint(event, display) {
   return new nut.Point(px, py);
 }
 
-// Wheel deltas arrive already normalized to notches by the sender. Clamp so a
-// runaway value cannot spin the host's scroll for thousands of lines.
+// Wheel deltas arrive already normalized to notches by the sender, batched
+// over ~50ms of real scrolling (see ViewPanel's scheduleWheel) rather than
+// one message per raw event — so a legitimate fast fling can add up to more
+// than a single tick's worth. Clamp higher than one tick would ever need, but
+// still bounded so a runaway value can't spin the host's scroll indefinitely.
 function notches(value) {
   const n = Math.round(value || 0);
   if (!n) return 0;
-  return Math.max(-30, Math.min(30, n));
+  return Math.max(-60, Math.min(60, n));
 }
 
 async function execute(event, display) {

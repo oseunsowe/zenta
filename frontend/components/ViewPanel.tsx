@@ -38,6 +38,17 @@ function wheelNotches(delta: number, deltaMode: number): number {
 const POINTER_INTERVAL_MS = 1000 / 45;
 const POINTER_BUFFERED_HIGH_WATERMARK = 4096;
 
+// Wheel events are the opposite of pointer moves: every notch matters (it's a
+// distance, not a position), so none can be dropped — but a trackpad or a
+// fast wheel fling emits many onWheel events per second, and each one used to
+// mean a separate reliable data-channel message AND a separate pair of native
+// calls on the host (position set + scroll). Now that the transport is fast
+// enough to deliver every one of those individually, the host's sequential
+// native-call execution can't keep up and scrolling visibly lags behind and
+// keeps "catching up" after the wheel stops. Batching into fewer, summed
+// sends fixes that without losing any scroll distance.
+const WHEEL_FLUSH_MS = 50;
+
 export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
   const PASSWORD_ROTATE_MS = 5 * 60 * 1000;
   const ROTATE_WARNING_MS = 30 * 1000;
@@ -57,6 +68,8 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
   const sendingInputRef = useRef(false);
   const pendingMoveRef = useRef<{ x: number; y: number } | null>(null);
   const moveTimerRef = useRef<number | null>(null);
+  const pendingWheelRef = useRef<{ x: number; y: number; dx: number; dy: number } | null>(null);
+  const wheelTimerRef = useRef<number | null>(null);
   const activePointerRef = useRef<number | null>(null);
   const pointerStartRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const rotatedAfterDisconnectRef = useRef(false);
@@ -112,6 +125,28 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
     pendingMoveRef.current = { x, y }; // always overwrite — only the latest position matters
     if (moveTimerRef.current !== null) return; // a flush is already scheduled
     moveTimerRef.current = window.setTimeout(flushPointerMove, POINTER_INTERVAL_MS);
+  }
+
+  function flushWheel() {
+    wheelTimerRef.current = null;
+    const pending = pendingWheelRef.current;
+    pendingWheelRef.current = null;
+    if (!pending) return;
+    sendCtrl({ type: 'wheel', x: pending.x, y: pending.y, dy: pending.dy, dx: pending.dx });
+  }
+
+  // Sums every notch since the last flush instead of sending one message per
+  // onWheel event — no scroll distance is lost, there's just one native
+  // scroll call on the host instead of a dozen per second.
+  function scheduleWheel(x: number, y: number, dy: number, dx: number) {
+    const pending = pendingWheelRef.current;
+    pendingWheelRef.current = {
+      x, y, // latest position wins, same as pointer moves
+      dy: (pending?.dy ?? 0) + dy,
+      dx: (pending?.dx ?? 0) + dx,
+    };
+    if (wheelTimerRef.current !== null) return;
+    wheelTimerRef.current = window.setTimeout(flushWheel, WHEEL_FLUSH_MS);
   }
 
   // `object-fit: contain` scales the video to fit the element while keeping
@@ -549,13 +584,7 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
           }}
           onWheel={(event) => {
             const { x, y } = relativeCoords(event);
-            sendCtrl({
-              type: 'wheel',
-              x,
-              y,
-              dy: wheelNotches(event.deltaY, event.deltaMode),
-              dx: wheelNotches(event.deltaX, event.deltaMode),
-            });
+            scheduleWheel(x, y, wheelNotches(event.deltaY, event.deltaMode), wheelNotches(event.deltaX, event.deltaMode));
           }}
           style={{
             width: '100%',

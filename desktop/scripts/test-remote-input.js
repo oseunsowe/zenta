@@ -98,7 +98,7 @@ async function check(name, events, expected) {
   await check('horizontal scroll now works',
     { type: 'wheel', x: 0, y: 0, dy: 0, dx: 4 }, 'move(0,0) scrollRight(4)');
   await check('runaway delta is clamped',
-    { type: 'wheel', x: 0, y: 0, dy: 99999 }, 'move(0,0) scrollDown(30)');
+    { type: 'wheel', x: 0, y: 0, dy: 99999 }, 'move(0,0) scrollDown(60)');
 
   console.log('\nKeyboard — held keys');
   await check('letter press/release',
