@@ -104,6 +104,34 @@ function debugErr(...args) {
 // --- Consensual remote control (native input injection) ------------------
 let remoteControlEnabled = false;
 
+// The display actually granted to getDisplayMedia() — NOT necessarily the
+// primary one on a multi-monitor host. Set by setupScreenCapture() below;
+// null falls back to primary (single-monitor hosts, or a window-capture
+// source with no matching display).
+let capturedDisplay = null;
+
+// nut-js/libnut-win32 positions the cursor in PHYSICAL pixels (it explicitly
+// patches DPI-scaling coordinate offsets — see its changelog), but Electron's
+// `screen` module reports bounds in DIP/logical pixels. On any host running
+// above 100% Windows scaling (125%/150%/200% are all common), mapping viewer
+// coordinates onto the unscaled DIP bounds put every click's target inside a
+// canvas smaller than the real screen — clicks drift further off the further
+// they are from the top-left corner, and the cursor can never reach the
+// bottom-right portion of the screen at all. Scale by scaleFactor to convert.
+function toPhysicalDisplay(d) {
+  const scale = d.scaleFactor || 1;
+  return {
+    x: Math.round(d.bounds.x * scale),
+    y: Math.round(d.bounds.y * scale),
+    width: Math.round(d.bounds.width * scale),
+    height: Math.round(d.bounds.height * scale),
+  };
+}
+
+function currentDisplay() {
+  return capturedDisplay || toPhysicalDisplay(screen.getPrimaryDisplay());
+}
+
 ipcMain.on('remote-control-available', (event) => {
   event.returnValue = remoteInput.available();
 });
@@ -117,9 +145,7 @@ ipcMain.on('remote-control-enabled', (_event, enabled) => {
 });
 ipcMain.on('remote-input', (_event, controlEvent) => {
   if (!remoteControlEnabled) return;
-  const d = screen.getPrimaryDisplay();
-  const display = { x: d.bounds.x, y: d.bounds.y, width: d.size.width, height: d.size.height };
-  void remoteInput.execute(controlEvent, display);
+  void remoteInput.execute(controlEvent, currentDisplay());
 });
 
 function createWindow() {
@@ -377,6 +403,15 @@ function setupScreenCapture() {
       .getSources({ types: ['screen', 'window'] })
       .then((sources) => {
         const primary = sources.find((s) => s.id.startsWith('screen:')) || sources[0];
+        // Record which actual Display this source is, so remote input maps
+        // onto the screen that's really being shared — not always whatever
+        // Electron considers "primary". desktopCapturer's `display_id` isn't
+        // guaranteed present on every platform/source (e.g. window capture),
+        // in which case currentDisplay() falls back to primary.
+        const match = primary && primary.display_id
+          ? screen.getAllDisplays().find((d) => String(d.id) === String(primary.display_id))
+          : null;
+        capturedDisplay = match ? toPhysicalDisplay(match) : null;
         callback(primary ? { video: primary } : undefined);
       })
       .catch(() => callback(undefined));
