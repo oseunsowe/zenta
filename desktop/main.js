@@ -145,7 +145,15 @@ ipcMain.on('remote-control-enabled', (_event, enabled) => {
 });
 ipcMain.on('remote-input', (_event, controlEvent) => {
   if (!remoteControlEnabled) return;
-  void remoteInput.execute(controlEvent, currentDisplay());
+  const display = currentDisplay();
+  if (HOST_DEBUG && (controlEvent.type === 'down' || controlEvent.type === 'click')) {
+    debugLog('[remote-input]', controlEvent.type,
+      'norm=', controlEvent.x?.toFixed(4), controlEvent.y?.toFixed(4),
+      'display=', display,
+      'target_px=', Math.round(display.x + (controlEvent.x ?? 0) * display.width),
+      Math.round(display.y + (controlEvent.y ?? 0) * display.height));
+  }
+  void remoteInput.execute(controlEvent, display);
 });
 
 function createWindow() {
@@ -412,6 +420,15 @@ function setupScreenCapture() {
           ? screen.getAllDisplays().find((d) => String(d.id) === String(primary.display_id))
           : null;
         capturedDisplay = match ? toPhysicalDisplay(match) : null;
+        if (HOST_DEBUG) {
+          debugLog('[screen-capture] picked source:', primary && primary.id, primary && primary.name,
+            'display_id=', primary && primary.display_id);
+          debugLog('[screen-capture] all displays:', screen.getAllDisplays().map((d) => (
+            { id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor }
+          )));
+          debugLog('[screen-capture] matched ->', match ? { bounds: match.bounds, scaleFactor: match.scaleFactor } : 'none (falls back to primary)',
+            'capturedDisplay (physical px) =', capturedDisplay);
+        }
         callback(primary ? { video: primary } : undefined);
       })
       .catch(() => callback(undefined));
