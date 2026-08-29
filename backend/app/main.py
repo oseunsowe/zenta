@@ -13,6 +13,7 @@ from app.routes.bridge import router as bridge_router
 from app.routes.chat import router as chat_router
 from app.routes.device import router as device_router
 from app.routes.pair import router as pair_router
+from app.routes.rtc import router as rtc_router
 from app.routes.screen import router as screen_router
 from app.routes.share_request import router as share_request_router
 from app.routes.users import router as users_router
@@ -133,6 +134,7 @@ app.include_router(admin_router, prefix=settings.api_prefix)
 app.include_router(pair_router, prefix=settings.api_prefix)
 app.include_router(bridge_router, prefix=settings.api_prefix)
 app.include_router(screen_router, prefix=settings.api_prefix)
+app.include_router(rtc_router, prefix=settings.api_prefix)
 app.include_router(users_router, prefix=settings.api_prefix)
 app.include_router(share_request_router, prefix=settings.api_prefix)
 # Widget loader served at root (no /api/v1 prefix) for clean <script src> URLs.

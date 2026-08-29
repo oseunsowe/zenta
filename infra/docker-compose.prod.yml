@@ -68,5 +68,36 @@ services:
       retries: 3
       start_period: 20s
 
+  # TURN relay for WebRTC media/data channels — never proxied through Caddy or
+  # a Cloudflare tunnel (Caddy is HTTP(S)-only and can't carry raw UDP media
+  # anyway). Requires UDP 3478 and the relay port range opened directly on the
+  # VPS firewall/security group; see infra/README.md and infra/.env.example.
+  # If TURN_SHARED_SECRET is left unset, the backend hands out STUN-only
+  # iceServers and this container isn't needed — fine for same-LAN testing,
+  # not for two arbitrary networks.
+  coturn:
+    image: coturn/coturn:4.6.2
+    restart: unless-stopped
+    # Host networking: coturn must advertise the VPS's real public IP as the
+    # relay-candidate address. Docker's default bridge network would instead
+    # advertise the container's private IP, which no external peer can reach —
+    # breaking every relay candidate. The tradeoff is the container shares the
+    # host's network namespace directly (no port-mapping isolation); if you'd
+    # rather avoid that, drop `network_mode: host` and instead publish
+    # `3478:3478/udp`, `3478:3478/tcp`, and `49160-49200:49160-49200/udp`.
+    network_mode: host
+    environment:
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET}
+      TURN_EXTERNAL_IP: ${TURN_EXTERNAL_IP}
+      TURN_REALM: ${TURN_REALM:-zenta.example.com}
+    command: >
+      -n --log-file=stdout
+      --listening-port=3478
+      --min-port=49160 --max-port=49200
+      --use-auth-secret --static-auth-secret=${TURN_SHARED_SECRET}
+      --realm=${TURN_REALM:-zenta.example.com}
+      --external-ip=${TURN_EXTERNAL_IP}
+      --no-cli --no-tls --no-dtls
+
 volumes:
   backend_state:

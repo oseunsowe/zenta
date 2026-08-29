@@ -3,6 +3,7 @@ import time
 from typing import Iterable
 
 import jwt
+from fastapi import HTTPException
 
 from app.config import settings
 from app.services.admin_state import is_invite_only
@@ -53,3 +54,20 @@ def decode_session_token(token: str | None) -> dict | None:
         return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     except jwt.PyJWTError:
         return None
+
+
+def extract_bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    parts = authorization.split(' ', 1)
+    if len(parts) != 2 or parts[0].lower() != 'bearer':
+        return None
+    return parts[1].strip()
+
+
+def require_bearer_session(authorization: str | None) -> dict:
+    """Decode an `Authorization: Bearer <token>` header or raise 401."""
+    claims = decode_session_token(extract_bearer_token(authorization))
+    if not claims:
+        raise HTTPException(status_code=401, detail='Invalid or missing session token')
+    return claims

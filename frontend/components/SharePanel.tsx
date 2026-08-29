@@ -5,14 +5,15 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { claimPair } from '../lib/pair';
 import { getStoredUserToken, homePath } from '../lib/users';
 import { storedDeviceToken } from '../lib/device';
-import { wsBase } from '../lib/endpoints';
 import { applyRemoteInput, isDesktop, remoteControlAvailable, setRemoteControl, type ControlEvent } from '../lib/host';
-
-function wsUrl(token: string, sessionId?: string | null) {
-  const params = new URLSearchParams({ role: 'publisher', token });
-  if (sessionId) params.set('session', sessionId);
-  return `${wsBase()}/api/v1/ws/screen?${params.toString()}`;
-}
+import {
+  applyVideoSendProfile,
+  fetchIceServers,
+  sendSignal,
+  signalingUrl,
+  VIDEO_SEND_PROFILE,
+  type SignalMessage,
+} from '../lib/webrtc';
 
 export default function SharePanel({
   initialCode,
@@ -39,7 +40,8 @@ export default function SharePanel({
   const remoteControlArmedRef = useRef(false);
   const previewRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const signalingRef = useRef<WebSocket | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
   const stopRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -83,7 +85,11 @@ export default function SharePanel({
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 20, max: 30 } },
+        video: {
+          width: { ideal: VIDEO_SEND_PROFILE.width },
+          height: { ideal: VIDEO_SEND_PROFILE.height },
+          frameRate: { ideal: VIDEO_SEND_PROFILE.frameRate, max: 30 },
+        },
         audio: false,
       });
     } catch (err) {
@@ -115,16 +121,14 @@ export default function SharePanel({
       void previewRef.current.play();
     }
 
-    const ws = new WebSocket(wsUrl(token, sessionId));
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
-
     let stopped = false;
 
     function stop() {
       if (stopped) return;
       stopped = true;
-      try { ws.close(); } catch {}
+      try { signalingRef.current?.close(); } catch {}
+      try { pcRef.current?.close(); } catch {}
+      pcRef.current = null;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       setStatus('stopped');
@@ -133,75 +137,12 @@ export default function SharePanel({
 
     stream.getVideoTracks()[0].addEventListener('ended', stop);
 
-    ws.onopen = () => {
-      setStatus('streaming');
-      const track = stream.getVideoTracks()[0];
-      const settings = track.getSettings();
-      // Cap the long edge — for remote control, frame rate matters far more than
-      // resolution, and a smaller frame encodes/transmits much faster.
-      const srcW = settings.width || 1280;
-      const srcH = settings.height || 720;
-      const scale = Math.min(1, 1280 / srcW);
-      const width = Math.max(1, Math.round(srcW * scale));
-      const height = Math.max(1, Math.round(srcH * scale));
+    const iceServers = await fetchIceServers(token);
+    if (stopped) return;
+    const pc = new RTCPeerConnection(iceServers);
+    pcRef.current = pc;
 
-      const video = document.createElement('video');
-      video.srcObject = stream;
-      video.muted = true;
-      void video.play();
-
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        setError('Canvas unsupported');
-        stop();
-        return;
-      }
-
-      const MIN_FRAME_MS = 50; // ceiling ~20 fps — self-paced, so this is a cap, not a target
-      // Kept deliberately small (roughly one frame's worth): this is *already
-      // encoded, unsent* video sitting in the socket. Every byte queued here
-      // is a byte of pure lag between what's happening on this screen and
-      // what the controller sees — for remote control, staying close to
-      // real-time matters far more than never skipping a frame under a slow
-      // link.
-      const MAX_BUFFERED = 65_536;
-      let lastSent = 0;
-
-      // Self-paced loop: send as fast as the socket drains, up to ~15 fps.
-      // Replaces the old fixed 200ms interval that collapsed to ~1 fps under
-      // any back-pressure.
-      const pump = async () => {
-        if (stopped || ws.readyState !== WebSocket.OPEN) return;
-        const elapsed = performance.now() - lastSent;
-        if (elapsed < MIN_FRAME_MS) {
-          setTimeout(pump, MIN_FRAME_MS - elapsed);
-          return;
-        }
-        if (ws.bufferedAmount > MAX_BUFFERED || video.readyState < 2) {
-          setTimeout(pump, 16);
-          return;
-        }
-        try {
-          ctx.drawImage(video, 0, 0, width, height);
-          const blob: Blob | null = await new Promise((resolve) =>
-            canvas.toBlob(resolve, 'image/jpeg', 0.55)
-          );
-          if (blob && !stopped && ws.readyState === WebSocket.OPEN) {
-            ws.send(await blob.arrayBuffer());
-            lastSent = performance.now();
-          }
-        } catch {
-          // skip this frame
-        }
-        if (!stopped) setTimeout(pump, 0);
-      };
-      void pump();
-    };
-
-    ws.onmessage = (event) => {
+    function onInputMessage(event: MessageEvent) {
       if (typeof event.data !== 'string') return;
       let msg: ControlEvent;
       try {
@@ -217,11 +158,61 @@ export default function SharePanel({
       if (remoteControlArmedRef.current) {
         applyRemoteInput(msg);
       }
+    }
+
+    // Publisher creates both data channels; the viewer receives them via
+    // ondatachannel. Pointer moves arrive unordered/no-retransmit (staleness
+    // beats reliability for a 45Hz position stream); clicks and keys arrive
+    // reliable/ordered so no press or release is ever dropped.
+    const pointerChannel = pc.createDataChannel('pointer', { ordered: false, maxRetransmits: 0 });
+    const controlChannel = pc.createDataChannel('control', { ordered: true });
+    pointerChannel.onmessage = onInputMessage;
+    controlChannel.onmessage = onInputMessage;
+
+    const videoTrack = stream.getVideoTracks()[0];
+    const sender = pc.addTrack(videoTrack, stream);
+    void applyVideoSendProfile(sender);
+
+    const ws = new WebSocket(signalingUrl(token, 'publisher', sessionId));
+    signalingRef.current = ws;
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) sendSignal(ws, { type: 'ice-candidate', candidate: event.candidate.toJSON() });
+    };
+    pc.onconnectionstatechange = () => {
+      setViewers(pc.connectionState === 'connected' ? 1 : 0);
+      if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) stop();
+    };
+
+    ws.onopen = () => setStatus('streaming');
+
+    ws.onmessage = async (event) => {
+      let msg: SignalMessage;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (msg.type === 'viewer-joined') {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal(ws, { type: 'offer', sdp: offer.sdp! });
+      } else if (msg.type === 'answer') {
+        await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      } else if (msg.type === 'ice-candidate') {
+        try {
+          await pc.addIceCandidate(msg.candidate);
+        } catch {
+          // Late/duplicate candidates are expected during trickle ICE — ignore.
+        }
+      } else if (msg.type === 'hangup') {
+        stop();
+      }
     };
 
     ws.onclose = () => stop();
     ws.onerror = () => {
-      setError('Relay connection failed.');
+      setError('Signaling connection failed.');
       stop();
     };
   }

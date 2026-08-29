@@ -1,31 +1,15 @@
-from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Header, WebSocket, WebSocketDisconnect
 
 from app.schemas import ChatRequest, ChatResponse, WebSocketMessage
-from app.services.auth import decode_session_token
+from app.services.auth import decode_session_token, require_bearer_session
 from app.services.chat import generate_reply
 
 router = APIRouter()
 
 
-def _extract_bearer(authorization: str | None) -> str | None:
-    if not authorization:
-        return None
-    parts = authorization.split(' ', 1)
-    if len(parts) != 2 or parts[0].lower() != 'bearer':
-        return None
-    return parts[1].strip()
-
-
-def _require_session(authorization: str | None) -> dict:
-    claims = decode_session_token(_extract_bearer(authorization))
-    if not claims:
-        raise HTTPException(status_code=401, detail='Invalid or missing session token')
-    return claims
-
-
 @router.post('/chat', response_model=ChatResponse)
 async def send_chat(request: ChatRequest, authorization: str | None = Header(None)):
-    claims = _require_session(authorization)
+    claims = require_bearer_session(authorization)
     return await generate_reply(request.message, request.character_id, claims.get('sub'))
 
 

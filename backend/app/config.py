@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     # Comma-separated CIDR ranges allowed to hit /health (loopback by default).
     health_allowed_cidrs: str = '127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'
 
+    # WebRTC ICE servers for /rtc/ice-servers. STUN is always offered; TURN is
+    # only included when a shared secret is configured (coturn --use-auth-secret
+    # ephemeral credentials — see app/services/turn.py). Empty turn_shared_secret
+    # means dev/localhost STUN-only, which is fine since host candidates connect
+    # directly with no NAT to traverse.
+    stun_urls: str = 'stun:stun.l.google.com:19302'
+    turn_urls: str = ''
+    turn_shared_secret: str = ''
+    turn_credential_ttl_seconds: int = 600
+
     @field_validator('jwt_secret')
     @classmethod
     def _reject_empty_jwt_secret(cls, value: str) -> str:

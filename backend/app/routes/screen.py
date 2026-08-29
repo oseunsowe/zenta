@@ -1,9 +1,11 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 
+from app.schemas import SignalMessage
 from app.services import share_request as share_svc
 from app.services.auth import decode_session_token
 from app.services.pair_store import revoke_pair_lease, validate_pair_lease
-from app.services.screen_relay import relay
+from app.services.screen_relay import relay, webrtc_relay
 
 router = APIRouter()
 
@@ -100,5 +102,79 @@ async def screen_socket(websocket: WebSocket):
         pass
     finally:
         await relay.unregister_viewer(session_id, websocket)
+        if not session_param and role == 'viewer':
+            revoke_pair_lease(pair_lease_id)
+
+
+@router.websocket('/ws/screen-webrtc')
+async def screen_webrtc_socket(websocket: WebSocket):
+    """SDP/ICE signaling only — no media or input crosses this socket. Reuses
+
+    screen_socket()'s exact auth/session-resolution/pair-lease logic above;
+    only the wire payload (typed JSON signaling messages vs. raw MJPEG bytes
+    and untyped input text) differs.
+    """
+    token = websocket.query_params.get('token')
+    role = (websocket.query_params.get('role') or '').lower()
+    session_param = websocket.query_params.get('session')
+
+    claims = decode_session_token(token)
+    if not claims or role not in {'publisher', 'viewer'}:
+        await websocket.close(code=1008)
+        return
+
+    if role == 'publisher' and claims.get('scope') == 'device-viewer':
+        await websocket.close(code=1008)
+        return
+
+    session_id = _resolve_session_id(claims, session_param)
+    if not session_id:
+        await websocket.close(code=1008)
+        return
+
+    pair_lease_id: str | None = None
+    if not session_param and role == 'viewer':
+        pair_lease_id = claims.get('pair_lease')
+        if not validate_pair_lease(session_id, pair_lease_id):
+            await websocket.close(code=1008)
+            return
+
+    await websocket.accept()
+
+    async def _pump(forward) -> None:
+        while True:
+            payload = await websocket.receive_json()
+            try:
+                msg = SignalMessage(**payload)
+            except ValidationError:
+                continue
+            await forward(session_id, msg.model_dump(exclude_none=True))
+
+    if role == 'publisher':
+        ok = await webrtc_relay.register_publisher(session_id, websocket)
+        if not ok:
+            await websocket.close(code=4001)
+            return
+        try:
+            if await webrtc_relay.has_viewer(session_id):
+                await websocket.send_json({'type': 'viewer-joined'})
+            await _pump(webrtc_relay.forward_to_viewer)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await webrtc_relay.unregister_publisher(session_id, websocket)
+        return
+
+    ok = await webrtc_relay.register_viewer(session_id, websocket)
+    if not ok:
+        await websocket.close(code=4001)
+        return
+    try:
+        await webrtc_relay.notify_publisher_viewer_joined(session_id)
+        await _pump(webrtc_relay.forward_to_publisher)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await webrtc_relay.unregister_viewer(session_id, websocket)
         if not session_param and role == 'viewer':
             revoke_pair_lease(pair_lease_id)

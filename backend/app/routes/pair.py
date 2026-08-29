@@ -8,7 +8,7 @@ from app.schemas import (
     PairClaimResponse,
     PairStartResponse,
 )
-from app.services.auth import decode_session_token, issue_session_token_for_sub
+from app.services.auth import issue_session_token_for_sub, require_bearer_session
 from app.services.pair_store import claim_pair_code, issue_pair_code, issue_pair_lease
 
 router = APIRouter()
@@ -29,20 +29,9 @@ def _detect_lan_ip() -> str | None:
     return None
 
 
-def _extract_bearer(authorization: str | None) -> str | None:
-    if not authorization:
-        return None
-    parts = authorization.split(' ', 1)
-    if len(parts) != 2 or parts[0].lower() != 'bearer':
-        return None
-    return parts[1].strip()
-
-
 @router.post('/pair/start', response_model=PairStartResponse)
 async def pair_start(request: Request, authorization: str | None = Header(None)):
-    claims = decode_session_token(_extract_bearer(authorization))
-    if not claims:
-        raise HTTPException(status_code=401, detail='Invalid or missing session token')
+    claims = require_bearer_session(authorization)
 
     code, ttl = issue_pair_code(claims['sub'], label='pair')
 

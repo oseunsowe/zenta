@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 class CharacterInfo(BaseModel):
@@ -86,3 +88,21 @@ class ShareRequestPublic(BaseModel):
     session_id: str | None = None
     created_at: float
     expires_at: float
+
+class IceCandidatePayload(BaseModel):
+    candidate: str
+    sdpMid: str | None = None
+    sdpMLineIndex: int | None = None
+
+class SignalMessage(BaseModel):
+    type: Literal['offer', 'answer', 'ice-candidate', 'hangup', 'viewer-joined']
+    sdp: str | None = None
+    candidate: IceCandidatePayload | None = None
+
+class IceServer(BaseModel):
+    urls: list[str]
+    username: str | None = None
+    credential: str | None = None
+
+class IceServersResponse(BaseModel):
+    iceServers: list[IceServer]

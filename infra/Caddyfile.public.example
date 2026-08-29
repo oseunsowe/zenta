@@ -1,11 +1,22 @@
 # Public production reverse proxy (Caddy v2).
 # Automatic HTTPS via Let's Encrypt. Serves ONE origin: /api -> backend,
-# everything else -> the Next.js frontend. WebSockets are handled automatically.
+# everything else -> the Next.js frontend. WebSockets are handled automatically
+# (that covers only the SDP/ICE *signaling* socket — low-bandwidth JSON, fine
+# to proxy).
+#
+# WebRTC media, data channels, and TURN do NOT go through this file at all.
+# Caddy is HTTP(S)-only and cannot proxy the raw UDP that TURN relays or that
+# peer connections use — coturn (see infra/docker-compose.prod.yml's `coturn`
+# service) listens directly on UDP 3478 + its relay port range, opened
+# straight on the VPS firewall/security group, bypassing both Caddy and any
+# Cloudflare tunnel entirely.
 #
 # Usage on the VPS:
 #   1. Point your domain's A/AAAA record at the server.
 #   2. Replace zenta.example.com below with your domain.
 #   3. caddy run --config Caddyfile   (or install as a service)
+#   4. Separately open UDP 3478 and the coturn relay range (see
+#      infra/.env.example) directly — not through this Caddyfile.
 
 zenta.example.com {
     encode zstd gzip

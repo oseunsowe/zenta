@@ -6,8 +6,16 @@ import { getStoredSessionToken } from '../lib/invite';
 import { startPair } from '../lib/pair';
 import { getStoredUserToken, homePath } from '../lib/users';
 import { getViewerToken } from '../lib/device';
-import { wsBase } from '../lib/endpoints';
 import type { ControlEvent } from '../lib/host';
+import {
+  CONTROL_CHANNEL_LABEL,
+  fetchIceServers,
+  POINTER_CHANNEL_LABEL,
+  sendSignal,
+  signalingUrl,
+  type SignalMessage,
+} from '../lib/webrtc';
+import RtcStatsPanel from './RtcStatsPanel';
 
 // Convert a browser wheel delta into scroll "notches" for the host.
 //
@@ -23,11 +31,12 @@ function wheelNotches(delta: number, deltaMode: number): number {
   return n > 0 ? Math.max(1, Math.round(n)) : Math.min(-1, Math.round(n));
 }
 
-function wsUrl(token: string, sessionId?: string | null) {
-  const params = new URLSearchParams({ role: 'viewer', token });
-  if (sessionId) params.set('session', sessionId);
-  return `${wsBase()}/api/v1/ws/screen?${params.toString()}`;
-}
+// Pointer movement is coalesced to 45 updates/sec (the unordered/no-retransmit
+// channel is meant for the *latest* position, not a queue of every position),
+// and dropped entirely once the channel's own bufferedAmount shows the link
+// can't keep up — better to skip a stale point than pile more on top of it.
+const POINTER_INTERVAL_MS = 1000 / 45;
+const POINTER_BUFFERED_HIGH_WATERMARK = 4096;
 
 export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
   const PASSWORD_ROTATE_MS = 5 * 60 * 1000;
@@ -38,14 +47,16 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
   const [rotationCountdownMs, setRotationCountdownMs] = useState(PASSWORD_ROTATE_MS);
   const [status, setStatus] = useState<'waiting' | 'streaming' | 'disconnected' | 'unauthorized'>('waiting');
   const [error, setError] = useState<string | null>(null);
-  const [fps, setFps] = useState(0);
   const [sendingInput, setSendingInput] = useState(false);
-  const imgRef = useRef<HTMLImageElement | null>(null);
-  const blobUrlRef = useRef<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const frameCountRef = useRef(0);
+  const [showStats, setShowStats] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const signalingRef = useRef<WebSocket | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const pointerChannelRef = useRef<RTCDataChannel | null>(null);
+  const controlChannelRef = useRef<RTCDataChannel | null>(null);
   const sendingInputRef = useRef(false);
-  const lastMoveSentRef = useRef(0);
+  const pendingMoveRef = useRef<{ x: number; y: number } | null>(null);
+  const moveTimerRef = useRef<number | null>(null);
   const activePointerRef = useRef<number | null>(null);
   const pointerStartRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const rotatedAfterDisconnectRef = useRef(false);
@@ -67,34 +78,53 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
   }
 
   function endSession() {
-    try { wsRef.current?.close(); } catch {}
-    if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = null;
-    }
-    // Hard navigation: reliably leaves this fullscreen WS page even mid-stream.
+    try { signalingRef.current?.close(); } catch {}
+    try { pcRef.current?.close(); } catch {}
+    // Hard navigation: reliably leaves this fullscreen page even mid-stream.
     window.location.assign(homePath());
   }
 
-  function sendCtrl(event: ControlEvent) {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !sendingInputRef.current) return;
+  function sendCtrl(event: ControlEvent, channel: 'pointer' | 'control' = 'control') {
+    const dc = channel === 'pointer' ? pointerChannelRef.current : controlChannelRef.current;
+    if (!dc || dc.readyState !== 'open' || !sendingInputRef.current) return;
     try {
-      ws.send(JSON.stringify(event));
+      dc.send(JSON.stringify(event));
     } catch {}
   }
 
-  // `object-fit: contain` scales the image to fit the element while keeping
+  function flushPointerMove() {
+    moveTimerRef.current = null;
+    const pending = pendingMoveRef.current;
+    pendingMoveRef.current = null;
+    const dc = pointerChannelRef.current;
+    if (!pending || !dc || dc.readyState !== 'open' || !sendingInputRef.current) return;
+    if (dc.bufferedAmount > POINTER_BUFFERED_HIGH_WATERMARK) {
+      // Backpressure: drop this update instead of queuing behind an already
+      // full channel — reschedule so the next flush picks up whatever the
+      // freshest pointer position is once the channel drains.
+      moveTimerRef.current = window.setTimeout(flushPointerMove, POINTER_INTERVAL_MS);
+      return;
+    }
+    dc.send(JSON.stringify({ type: 'move', x: pending.x, y: pending.y }));
+  }
+
+  function schedulePointerMove(x: number, y: number) {
+    pendingMoveRef.current = { x, y }; // always overwrite — only the latest position matters
+    if (moveTimerRef.current !== null) return; // a flush is already scheduled
+    moveTimerRef.current = window.setTimeout(flushPointerMove, POINTER_INTERVAL_MS);
+  }
+
+  // `object-fit: contain` scales the video to fit the element while keeping
   // its aspect ratio, which almost always leaves letterboxing (black bars) on
-  // one axis — the rendered image is a smaller, centered rectangle inside the
-  // element's box, not the whole box. Dividing by the raw element rect (the
-  // old code) ignored that offset, so every click landed off by however much
-  // letterboxing there was — worse the more the host's screen and the
+  // one axis — the rendered picture is a smaller, centered rectangle inside
+  // the element's box, not the whole box. Dividing by the raw element rect
+  // ignores that offset, so every click would land off by however much
+  // letterboxing there is — worse the more the host's screen and the
   // viewer's window disagree on aspect ratio, which is the common case.
-  function imageRelativeCoords(img: HTMLImageElement, clientX: number, clientY: number) {
-    const rect = img.getBoundingClientRect();
-    const naturalW = img.naturalWidth || rect.width;
-    const naturalH = img.naturalHeight || rect.height;
+  function videoRelativeCoords(video: HTMLVideoElement, clientX: number, clientY: number) {
+    const rect = video.getBoundingClientRect();
+    const naturalW = video.videoWidth || rect.width;
+    const naturalH = video.videoHeight || rect.height;
     const scale = Math.min(rect.width / naturalW, rect.height / naturalH) || 1;
     const renderedW = naturalW * scale;
     const renderedH = naturalH * scale;
@@ -107,12 +137,12 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
     return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
   }
 
-  function relativeCoords(event: React.MouseEvent<HTMLImageElement> | React.WheelEvent<HTMLImageElement>) {
-    return imageRelativeCoords(event.currentTarget, event.clientX, event.clientY);
+  function relativeCoords(event: React.MouseEvent<HTMLVideoElement> | React.WheelEvent<HTMLVideoElement>) {
+    return videoRelativeCoords(event.currentTarget, event.clientX, event.clientY);
   }
 
-  function pointerCoords(event: React.PointerEvent<HTMLImageElement>) {
-    return imageRelativeCoords(event.currentTarget, event.clientX, event.clientY);
+  function pointerCoords(event: React.PointerEvent<HTMLVideoElement>) {
+    return videoRelativeCoords(event.currentTarget, event.clientX, event.clientY);
   }
 
   function sendQuickAction(event: ControlEvent) {
@@ -171,9 +201,8 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
       setStatus('unauthorized');
       return;
     }
-    const ws = new WebSocket(wsUrl(token, sessionId));
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
+
+    let cancelled = false;
     rotatedAfterDisconnectRef.current = false;
 
     const rotateAfterDrop = () => {
@@ -183,34 +212,83 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
       void generateCode();
     };
 
-    ws.onmessage = (event) => {
-      if (typeof event.data === 'string') return;
-      const blob = new Blob([event.data], { type: 'image/jpeg' });
-      const url = URL.createObjectURL(blob);
-      if (imgRef.current) imgRef.current.src = url;
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = url;
-      frameCountRef.current += 1;
-      if (status !== 'streaming') setStatus('streaming');
-    };
-    ws.onclose = () => {
-      setStatus('disconnected');
-      rotateAfterDrop();
-    };
-    ws.onerror = () => {
-      setStatus('disconnected');
-      rotateAfterDrop();
-    };
+    function teardown() {
+      try { signalingRef.current?.close(); } catch {}
+      try { pcRef.current?.close(); } catch {}
+      signalingRef.current = null;
+      pcRef.current = null;
+      pointerChannelRef.current = null;
+      controlChannelRef.current = null;
+    }
 
-    const fpsTimer = window.setInterval(() => {
-      setFps(frameCountRef.current);
-      frameCountRef.current = 0;
-    }, 1000);
+    async function connect() {
+      const iceServers = await fetchIceServers(token!);
+      if (cancelled) return;
+
+      const pc = new RTCPeerConnection(iceServers);
+      pcRef.current = pc;
+
+      pc.ontrack = (event) => {
+        if (videoRef.current) videoRef.current.srcObject = event.streams[0];
+        setStatus('streaming');
+      };
+      pc.ondatachannel = (event) => {
+        if (event.channel.label === POINTER_CHANNEL_LABEL) pointerChannelRef.current = event.channel;
+        else if (event.channel.label === CONTROL_CHANNEL_LABEL) controlChannelRef.current = event.channel;
+      };
+      pc.onconnectionstatechange = () => {
+        if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+          setStatus('disconnected');
+          rotateAfterDrop();
+        }
+      };
+      pc.onicecandidate = (event) => {
+        if (event.candidate && signalingRef.current) {
+          sendSignal(signalingRef.current, { type: 'ice-candidate', candidate: event.candidate.toJSON() });
+        }
+      };
+
+      const ws = new WebSocket(signalingUrl(token!, 'viewer', sessionId));
+      signalingRef.current = ws;
+
+      ws.onmessage = async (event) => {
+        let msg: SignalMessage;
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (msg.type === 'offer') {
+          await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          sendSignal(ws, { type: 'answer', sdp: answer.sdp! });
+        } else if (msg.type === 'ice-candidate') {
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch {
+            // Late/duplicate candidates are expected during trickle ICE — ignore.
+          }
+        } else if (msg.type === 'hangup') {
+          setStatus('disconnected');
+          rotateAfterDrop();
+        }
+      };
+      ws.onclose = () => {
+        setStatus('disconnected');
+        rotateAfterDrop();
+      };
+      ws.onerror = () => {
+        setStatus('disconnected');
+        rotateAfterDrop();
+      };
+    }
+
+    void connect();
 
     return () => {
-      window.clearInterval(fpsTimer);
-      try { ws.close(); } catch {}
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      cancelled = true;
+      teardown();
     };
   }, [sessionId]);
 
@@ -293,11 +371,18 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
             </button>
           )}
           <strong>Remote screen</strong>
-          <span style={{ color: '#8f98ba', fontSize: '13px' }}>
-            {status === 'streaming' ? `${fps} fps` : status}
-          </span>
+          <span style={{ color: '#8f98ba', fontSize: '13px' }}>{status}</span>
         </div>
         <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
+          {status === 'streaming' ? (
+            <label
+              style={{ fontSize: '13px', color: showStats ? '#7ee0a0' : '#aab1d8', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}
+              title="Show live connection stats: candidate type, RTT, loss, jitter, bitrate, fps, codec, buffered data."
+            >
+              <input type="checkbox" checked={showStats} onChange={(event) => setShowStats(event.target.checked)} />
+              Stats
+            </label>
+          ) : null}
           {status === 'streaming' ? (
             <label
               style={{ fontSize: '13px', color: sendingInput ? '#7ee0a0' : '#aab1d8', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}
@@ -404,84 +489,90 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
         </div>
       ) : null}
 
-      <img
-        ref={imgRef}
-        alt=""
-        onPointerDown={(event) => {
-          if (!sendingInputRef.current) return;
-          const { x, y } = pointerCoords(event);
-          activePointerRef.current = event.pointerId;
-          pointerStartRef.current = { x, y, moved: false };
-          if (event.pointerType === 'touch') event.preventDefault();
-          event.currentTarget.setPointerCapture(event.pointerId);
-          sendCtrl({ type: 'move', x, y });
-          sendCtrl({ type: 'down', x, y, button: event.button });
-        }}
-        onPointerMove={(event) => {
-          if (!sendingInputRef.current) return;
-          if (activePointerRef.current !== null && event.pointerId !== activePointerRef.current) return;
-          const now = performance.now();
-          if (now - lastMoveSentRef.current < 16) return; // ~60 Hz
-          lastMoveSentRef.current = now;
-          const { x, y } = pointerCoords(event);
-          if (pointerStartRef.current) {
-            const movedFar = Math.abs(pointerStartRef.current.x - x) > 0.01 || Math.abs(pointerStartRef.current.y - y) > 0.01;
-            if (movedFar) pointerStartRef.current.moved = true;
-          }
-          sendCtrl({ type: 'move', x, y });
-        }}
-        onPointerUp={(event) => {
-          if (!sendingInputRef.current) return;
-          if (activePointerRef.current !== null && event.pointerId !== activePointerRef.current) return;
-          const { x, y } = pointerCoords(event);
-          sendCtrl({ type: 'up', x, y, button: event.button });
-          if (pointerStartRef.current && !pointerStartRef.current.moved) {
-            sendCtrl({ type: 'click', x, y, button: event.button });
-          }
-          pointerStartRef.current = null;
-          activePointerRef.current = null;
-          try {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          } catch {
-            // Ignore if capture was not set.
-          }
-        }}
-        onPointerCancel={(event) => {
-          if (!sendingInputRef.current) return;
-          const { x, y } = pointerCoords(event);
-          sendCtrl({ type: 'up', x, y, button: event.button });
-          pointerStartRef.current = null;
-          activePointerRef.current = null;
-        }}
-        onDoubleClick={(event) => {
-          const { x, y } = relativeCoords(event);
-          sendCtrl({ type: 'dblclick', x, y, button: event.button });
-        }}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          const { x, y } = relativeCoords(event);
-          sendCtrl({ type: 'click', x, y, button: 2 });
-        }}
-        onWheel={(event) => {
-          const { x, y } = relativeCoords(event);
-          sendCtrl({
-            type: 'wheel',
-            x,
-            y,
-            dy: wheelNotches(event.deltaY, event.deltaMode),
-            dx: wheelNotches(event.deltaX, event.deltaMode),
-          });
-        }}
-        style={{
-          flex: 1,
-          objectFit: 'contain',
-          background: '#000',
-          display: status === 'streaming' ? 'block' : 'none',
-          minHeight: 0,
-          touchAction: 'none',
-          cursor: 'default',
-        }}
-      />
+      <div style={{ position: 'relative', flex: 1, minHeight: 0, display: status === 'streaming' ? 'block' : 'none' }}>
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          onPointerDown={(event) => {
+            if (!sendingInputRef.current) return;
+            const { x, y } = pointerCoords(event);
+            activePointerRef.current = event.pointerId;
+            pointerStartRef.current = { x, y, moved: false };
+            if (event.pointerType === 'touch') event.preventDefault();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            sendCtrl({ type: 'move', x, y }, 'pointer');
+            sendCtrl({ type: 'down', x, y, button: event.button });
+          }}
+          onPointerMove={(event) => {
+            if (!sendingInputRef.current) return;
+            if (activePointerRef.current !== null && event.pointerId !== activePointerRef.current) return;
+            const { x, y } = pointerCoords(event);
+            if (pointerStartRef.current) {
+              const movedFar = Math.abs(pointerStartRef.current.x - x) > 0.01 || Math.abs(pointerStartRef.current.y - y) > 0.01;
+              if (movedFar) pointerStartRef.current.moved = true;
+            }
+            schedulePointerMove(x, y);
+          }}
+          onPointerUp={(event) => {
+            if (!sendingInputRef.current) return;
+            if (activePointerRef.current !== null && event.pointerId !== activePointerRef.current) return;
+            const { x, y } = pointerCoords(event);
+            sendCtrl({ type: 'up', x, y, button: event.button });
+            if (pointerStartRef.current && !pointerStartRef.current.moved) {
+              sendCtrl({ type: 'click', x, y, button: event.button });
+            }
+            pointerStartRef.current = null;
+            activePointerRef.current = null;
+            try {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            } catch {
+              // Ignore if capture was not set.
+            }
+          }}
+          onPointerCancel={(event) => {
+            if (!sendingInputRef.current) return;
+            const { x, y } = pointerCoords(event);
+            sendCtrl({ type: 'up', x, y, button: event.button });
+            pointerStartRef.current = null;
+            activePointerRef.current = null;
+          }}
+          onDoubleClick={(event) => {
+            const { x, y } = relativeCoords(event);
+            sendCtrl({ type: 'dblclick', x, y, button: event.button });
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            const { x, y } = relativeCoords(event);
+            sendCtrl({ type: 'click', x, y, button: 2 });
+          }}
+          onWheel={(event) => {
+            const { x, y } = relativeCoords(event);
+            sendCtrl({
+              type: 'wheel',
+              x,
+              y,
+              dy: wheelNotches(event.deltaY, event.deltaMode),
+              dx: wheelNotches(event.deltaX, event.deltaMode),
+            });
+          }}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            background: '#000',
+            display: 'block',
+            touchAction: 'none',
+            cursor: 'default',
+          }}
+        />
+        {showStats ? (
+          <div style={{ position: 'absolute', top: '12px', right: '12px' }}>
+            <RtcStatsPanel pc={pcRef.current} pointerChannel={pointerChannelRef.current} controlChannel={controlChannelRef.current} />
+          </div>
+        ) : null}
+      </div>
 
       {error ? <p style={{ color: '#ff9b9b', padding: '8px 16px' }}>{error}</p> : null}
     </main>
