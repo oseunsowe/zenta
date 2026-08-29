@@ -97,6 +97,8 @@ services:
       --use-auth-secret --static-auth-secret=${TURN_SHARED_SECRET}
       --realm=${TURN_REALM:-zenta.example.com}
       --external-ip=${TURN_EXTERNAL_IP}
+      --listening-ip=${TURN_EXTERNAL_IP}
+      --relay-ip=${TURN_EXTERNAL_IP}
       --no-cli --no-tls --no-dtls
 
 volumes:
