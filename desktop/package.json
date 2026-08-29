@@ -28,6 +28,8 @@
     "directories": {
       "output": "dist"
     },
+    "compression": "maximum",
+    "afterPack": "scripts/after-pack.js",
     "asar": true,
     "asarUnpack": [
       "**/*.node",
