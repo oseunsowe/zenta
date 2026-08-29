@@ -5,7 +5,7 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { claimPair } from '../lib/pair';
 import { getStoredUserToken, homePath } from '../lib/users';
 import { storedDeviceToken } from '../lib/device';
-import { applyRemoteInput, isDesktop, remoteControlAvailable, setRemoteControl, type ControlEvent } from '../lib/host';
+import { applyRemoteInput, isDesktop, notifyViewerConnected, remoteControlAvailable, setRemoteControl, type ControlEvent } from '../lib/host';
 import {
   applyVideoSendProfile,
   fetchIceServers,
@@ -179,8 +179,13 @@ export default function SharePanel({
     pc.onicecandidate = (event) => {
       if (event.candidate) sendSignal(ws, { type: 'ice-candidate', candidate: event.candidate.toJSON() });
     };
+    let notifiedConnected = false;
     pc.onconnectionstatechange = () => {
       setViewers(pc.connectionState === 'connected' ? 1 : 0);
+      if (pc.connectionState === 'connected' && !notifiedConnected) {
+        notifiedConnected = true;
+        notifyViewerConnected();
+      }
       if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) stop();
     };
 

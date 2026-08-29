@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, session, desktopCapturer, shell, dialog } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, session, desktopCapturer, shell, dialog, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
@@ -142,6 +142,23 @@ ipcMain.on('remote-control-enabled', (_event, enabled) => {
   // subsequent keystroke a shortcut. Always let go.
   if (remoteControlEnabled && !next) void remoteInput.releaseAll();
   remoteControlEnabled = next;
+});
+ipcMain.on('viewer-connected', () => {
+  if (!Notification.isSupported()) return;
+  const notification = new Notification({
+    title: 'Zenta',
+    body: 'Someone connected and is now viewing your screen.',
+    silent: false,
+  });
+  // Bring the app forward so the person at this machine can see who's
+  // watching / take over, rather than the notification being the only trace.
+  notification.on('click', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+  notification.show();
 });
 ipcMain.on('remote-input', (_event, controlEvent) => {
   if (!remoteControlEnabled) return;

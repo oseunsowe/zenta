@@ -14,4 +14,9 @@ contextBridge.exposeInMainWorld('__host', {
   remoteControlAvailable: () => ipcRenderer.sendSync('remote-control-available'),
   setRemoteControl: (enabled) => ipcRenderer.send('remote-control-enabled', !!enabled),
   sendRemoteInput: (event) => ipcRenderer.send('remote-input', event),
+
+  // Sharing is auto-accepted (no blocking consent dialog — see SharePanel),
+  // so a native OS notification is the only thing that tells the person at
+  // this machine someone just connected.
+  notifyViewerConnected: () => ipcRenderer.send('viewer-connected'),
 });

@@ -28,6 +28,7 @@ interface HostBridge {
   sendRemoteInput?: (event: ControlEvent) => void;
   onShowSecureLogin?: (cb: () => void) => void;
   removeShowSecureLogin?: (cb: () => void) => void;
+  notifyViewerConnected?: () => void;
 }
 
 function host(): HostBridge | null {
@@ -55,4 +56,10 @@ export function setRemoteControl(enabled: boolean): void {
 
 export function applyRemoteInput(event: ControlEvent): void {
   host()?.sendRemoteInput?.(event);
+}
+
+/** Sharing auto-accepts with no consent dialog (see SharePanel) — this is
+ *  the only signal telling the person at this machine someone just connected. */
+export function notifyViewerConnected(): void {
+  host()?.notifyViewerConnected?.();
 }
