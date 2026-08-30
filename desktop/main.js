@@ -128,6 +128,26 @@ function toPhysicalDisplay(d) {
   };
 }
 
+// For the primary display (the common single-monitor case), nut-js's own
+// screen.width()/height() is ground truth for the coordinate space it will
+// actually place the cursor in — no scaleFactor conversion to get wrong.
+// Resolved once when sharing starts (see setupScreenCapture) since it's an
+// async call and the synchronous input-event path can't await it per event.
+let nativeMainDisplaySize = null;
+
+async function resolveCapturedDisplay(matchedElectronDisplay) {
+  const isPrimaryOrUnmatched = !matchedElectronDisplay || matchedElectronDisplay.id === screen.getPrimaryDisplay().id;
+  if (isPrimaryOrUnmatched) {
+    nativeMainDisplaySize = await remoteInput.nativeScreenSize();
+    if (nativeMainDisplaySize) {
+      return { x: 0, y: 0, width: nativeMainDisplaySize.width, height: nativeMainDisplaySize.height };
+    }
+  }
+  // Secondary display, or nut-js's own size lookup failed: fall back to the
+  // scaleFactor-derived conversion — best effort, not ground truth.
+  return toPhysicalDisplay(matchedElectronDisplay || screen.getPrimaryDisplay());
+}
+
 function currentDisplay() {
   return capturedDisplay || toPhysicalDisplay(screen.getPrimaryDisplay());
 }
@@ -426,17 +446,17 @@ function setupScreenCapture() {
   session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
     desktopCapturer
       .getSources({ types: ['screen', 'window'] })
-      .then((sources) => {
+      .then(async (sources) => {
         const primary = sources.find((s) => s.id.startsWith('screen:')) || sources[0];
         // Record which actual Display this source is, so remote input maps
         // onto the screen that's really being shared — not always whatever
         // Electron considers "primary". desktopCapturer's `display_id` isn't
         // guaranteed present on every platform/source (e.g. window capture),
-        // in which case currentDisplay() falls back to primary.
+        // in which case resolveCapturedDisplay() falls back to primary.
         const match = primary && primary.display_id
           ? screen.getAllDisplays().find((d) => String(d.id) === String(primary.display_id))
           : null;
-        capturedDisplay = match ? toPhysicalDisplay(match) : null;
+        capturedDisplay = await resolveCapturedDisplay(match);
         if (HOST_DEBUG) {
           debugLog('[screen-capture] picked source:', primary && primary.id, primary && primary.name,
             'display_id=', primary && primary.display_id);
@@ -444,7 +464,8 @@ function setupScreenCapture() {
             { id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor }
           )));
           debugLog('[screen-capture] matched ->', match ? { bounds: match.bounds, scaleFactor: match.scaleFactor } : 'none (falls back to primary)',
-            'capturedDisplay (physical px) =', capturedDisplay);
+            'nativeMainDisplaySize (from nut-js) =', nativeMainDisplaySize,
+            'capturedDisplay (final, px) =', capturedDisplay);
         }
         callback(primary ? { video: primary } : undefined);
       })

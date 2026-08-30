@@ -31,6 +31,21 @@ function getLoadError() {
   return loadError;
 }
 
+// The screen size nut-js/libnut itself reports — hardware/physical pixels,
+// exactly the coordinate space mouse.setPosition() places the cursor in.
+// Only covers the *main* display (nut-js has no multi-monitor API here), but
+// for that display this is ground truth: it comes straight from the library
+// that will actually move the cursor, instead of being derived from
+// Electron's DIP bounds * scaleFactor and hoping the conversion is right.
+async function nativeScreenSize() {
+  if (!nut) return null;
+  try {
+    return { width: await nut.screen.width(), height: await nut.screen.height() };
+  } catch {
+    return null;
+  }
+}
+
 function buttonFor(button) {
   if (!nut) return null;
   if (button === 2) return nut.Button.RIGHT;
@@ -229,4 +244,4 @@ async function execute(event, display) {
   }
 }
 
-module.exports = { available, getLoadError, execute, releaseAll, resolveKey, notches };
+module.exports = { available, getLoadError, execute, releaseAll, resolveKey, notches, nativeScreenSize };
