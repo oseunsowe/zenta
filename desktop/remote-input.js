@@ -239,8 +239,16 @@ async function execute(event, display) {
       default:
         break;
     }
-  } catch {
-    // Never let a single event take down the host.
+    if (process.env.HOST_DEBUG === 'true' && (event.type === 'down' || event.type === 'click' || event.type === 'wheel')) {
+      console.log('[remote-input] execute() completed for', event.type);
+    }
+  } catch (err) {
+    // Never let a single event take down the host — but a silently-eaten
+    // failure here looks identical to "clicks do nothing" from the outside,
+    // so surface it when debugging is on instead of swallowing it blind.
+    if (process.env.HOST_DEBUG === 'true') {
+      console.error('[remote-input] execute() failed for', event.type, ':', err && err.message ? err.message : err);
+    }
   }
 }
 
