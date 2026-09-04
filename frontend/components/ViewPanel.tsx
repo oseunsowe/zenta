@@ -58,14 +58,17 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
   const [rotationCountdownMs, setRotationCountdownMs] = useState(PASSWORD_ROTATE_MS);
   const [status, setStatus] = useState<'waiting' | 'streaming' | 'disconnected' | 'unauthorized'>('waiting');
   const [error, setError] = useState<string | null>(null);
-  const [sendingInput, setSendingInput] = useState(false);
+  // Control is granted the instant a session connects — matching the host
+  // side, which already auto-arms (see SharePanel). No separate opt-in step;
+  // the checkbox stays only as an escape hatch to switch to watch-only.
+  const [sendingInput, setSendingInput] = useState(true);
   const [showStats, setShowStats] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const signalingRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const pointerChannelRef = useRef<RTCDataChannel | null>(null);
   const controlChannelRef = useRef<RTCDataChannel | null>(null);
-  const sendingInputRef = useRef(false);
+  const sendingInputRef = useRef(true);
   const pendingMoveRef = useRef<{ x: number; y: number } | null>(null);
   const moveTimerRef = useRef<number | null>(null);
   const pendingWheelRef = useRef<{ x: number; y: number; dx: number; dy: number } | null>(null);
@@ -421,7 +424,7 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
           {status === 'streaming' ? (
             <label
               style={{ fontSize: '13px', color: sendingInput ? '#7ee0a0' : '#aab1d8', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}
-              title="Send your mouse and keyboard to control the remote machine. The host desktop app auto-arms remote control while sharing."
+              title="Your mouse and keyboard control the remote machine by default. Uncheck to switch to watch-only."
             >
               <input
                 type="checkbox"
@@ -431,7 +434,7 @@ export default function ViewPanel({ sessionId }: { sessionId?: string } = {}) {
                   setSendingInput(event.target.checked);
                 }}
               />
-              {sendingInput ? '🖱 Controlling' : 'Control'}
+              {sendingInput ? '🖱 Controlling' : 'Watch only'}
             </label>
           ) : null}
           {status === 'streaming' && sendingInput ? (
